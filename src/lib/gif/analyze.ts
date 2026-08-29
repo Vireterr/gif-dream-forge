@@ -62,7 +62,7 @@ async function analyzeOne(file: File): Promise<SourceStats> {
   let counted = 0;
 
   for (let i = 0; i < frames.length; i += step) {
-    const f = frames[i];
+    const f = frames[i]!;
     patch.width = f.dims.width;
     patch.height = f.dims.height;
     pctx.putImageData(new ImageData(new Uint8ClampedArray(f.patch), f.dims.width, f.dims.height), 0, 0);
@@ -79,8 +79,8 @@ async function analyzeOne(file: File): Promise<SourceStats> {
     for (let y = 0; y < SAMPLE; y++) {
       for (let x = 0; x < SAMPLE; x++) {
         const o = (y * SAMPLE + x) * 4;
-        if (data[o + 3] < 24) continue;
-        const px: RGB = [data[o], data[o + 1], data[o + 2]];
+        if (data[o + 3]! < 24) continue;
+        const px: RGB = [data[o]!, data[o + 1]!, data[o + 2]!];
         if ((x + y) % 3 === 0) pixels.push(px);
         const l = luma(px);
         lumas.push(l);
@@ -89,13 +89,20 @@ async function analyzeOne(file: File): Promise<SourceStats> {
         satAcc += mx === 0 ? 0 : (mx - mn) / mx;
         if (x + 1 < SAMPLE) {
           const n = (y * SAMPLE + x + 1) * 4;
-          edge += Math.abs(data[o] - data[n]) + Math.abs(data[o + 1] - data[n + 1]) + Math.abs(data[o + 2] - data[n + 2]);
+          edge +=
+            Math.abs(data[o]! - data[n]!) +
+            Math.abs(data[o + 1]! - data[n + 1]!) +
+            Math.abs(data[o + 2]! - data[n + 2]!);
         }
         if (prev) {
-          diff += Math.abs(data[o] - prev[o]) + Math.abs(data[o + 1] - prev[o + 1]) + Math.abs(data[o + 2] - prev[o + 2]);
+          diff +=
+            Math.abs(data[o]! - prev[o]!) +
+            Math.abs(data[o + 1]! - prev[o + 1]!) +
+            Math.abs(data[o + 2]! - prev[o + 2]!);
         }
       }
     }
+
     const n = SAMPLE * SAMPLE;
     if (prev) motionAcc += diff / (n * 765);
     grainAcc += edge / (n * 765);

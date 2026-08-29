@@ -154,7 +154,7 @@ function buildPalette(pixels: RGB[], count = 6): { palette: string[]; background
   }
   let i = 0;
   while (picked.length < count && ranked.length) {
-    picked.push(ranked[i % ranked.length].c);
+    picked.push(ranked[i % ranked.length]!.c);
     i++;
   }
   const background = toHex(ranked[0]?.c ?? [12, 12, 14]);

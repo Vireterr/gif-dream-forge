@@ -48,6 +48,7 @@ interface Recipe {
   scale: number;
   rot: number;
   grain: number;
+  fidelity: number;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -63,27 +64,43 @@ function mix(a: string, b: string, t: number) {
   )})`;
 }
 
-export function makeRecipe(seed: number, p: StyleProfile): Recipe {
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+/** Which visual systems best match the source character, used at high fidelity. */
+function systemsFor(p: StyleProfile): System[] {
+  if (p.motion > 0.55) return ["flow", "cells", "waves"];
+  if (p.contrast > 0.6) return ["shards", "strata", "orbit"];
+  return ["waves", "flow", "orbit", "cells"];
+}
+
+export function makeRecipe(seed: number, p: StyleProfile, fidelity = 0.5): Recipe {
+  const f = Math.max(0, Math.min(1, fidelity));
   const rand = mulberry32(seed);
-  const system = SYSTEMS[Math.floor(rand() * SYSTEMS.length)]!;
-  // rotate the palette so each piece reads as a sibling, not a clone
-  const offset = Math.floor(rand() * p.palette.length);
+  const pool = f > 0.5 ? systemsFor(p) : SYSTEMS.slice();
+  const system = pool[Math.floor(rand() * pool.length)]!;
+  // rotate the palette so each piece reads as a sibling — less rotation the closer we stay to the source
+  const maxOffset = Math.max(1, Math.round(p.palette.length * (1 - f)));
+  const offset = Math.floor(rand() * maxOffset);
   const colors = p.palette.map((_, i) => p.palette[(i + offset) % p.palette.length]!);
   const darkest = p.palette[0] ?? "#101014";
-  const bg = rand() < 0.7 ? darkest : mix(darkest, p.background, 0.5).replace("rgb", "rgb");
+  const bg = f > 0.6 ? p.background : rand() < 0.7 ? darkest : mix(darkest, p.background, 0.5);
+  const sourceSpeed = 0.4 + p.motion * 1.8;
+  const sourceDensity = 0.5 + p.contrast * 0.8;
   return {
     system,
     rand,
     noise: valueNoise(mulberry32(seed * 7919 + 13)),
     colors,
     bg,
-    speed: 0.4 + p.motion * 1.8 + rand() * 0.5,
-    density: 0.5 + p.contrast * 0.8 + rand() * 0.7,
-    scale: 0.6 + rand() * 1.4,
-    rot: rand() * Math.PI * 2,
+    speed: sourceSpeed + rand() * 0.5 * (1 - f),
+    density: sourceDensity + rand() * 0.7 * (1 - f),
+    scale: lerp(0.6 + rand() * 1.4, 1, f),
+    rot: rand() * Math.PI * 2 * (1 - f),
     grain: p.grain,
+    fidelity: f,
   };
 }
+
 
 /* ---------- frame painters (t in 0..1, seamless loop) ---------- */
 

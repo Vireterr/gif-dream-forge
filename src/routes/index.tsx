@@ -6,11 +6,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "GIF Variation Studio" },
-      {
-        name: "description",
-        content:
-          "Upload a GIF and generate multiple visual variations while preserving its identity.",
-      },
+      { name: "description", content: "Upload a GIF and generate visual variations." },
     ],
   }),
   component: Studio,
@@ -30,14 +26,6 @@ interface VariationResult {
   id: string;
   url: string;
   bytes: number;
-  seed: number;
-}
-
-interface DisplacementField {
-  dx: Float32Array;
-  dy: Float32Array;
-  width: number;
-  height: number;
 }
 
 // ============================================================
@@ -93,7 +81,7 @@ function detRand(seed: number, offset: number): number {
 }
 
 // ============================================================
-// GIF DECODER
+// GIF DECODER (правильный — с disposal method и прозрачностью)
 // ============================================================
 async function decodeGif(file: File): Promise<Frame[]> {
   const buffer = await file.arrayBuffer();
@@ -120,22 +108,47 @@ async function decodeGif(file: File): Promise<Frame[]> {
 
   const frames: Frame[] = [];
   let delay = 100;
-  let compositeBuffer: Uint8ClampedArray | null = null;
+  let transparentIndex = -1;
+  let disposalMethod = 0;
+
+  // Композитный буфер — хранит текущее состояние canvas
+  const composite = new Uint8ClampedArray(width * height * 4);
+  // Заполняем белым фоном (как браузер)
+  for (let i = 0; i < width * height; i++) {
+    composite[i * 4] = 255;
+    composite[i * 4 + 1] = 255;
+    composite[i * 4 + 2] = 255;
+    composite[i * 4 + 3] = 255;
+  }
+
+  // Сохранение предыдущего состояния для disposal=3
+  let previousComposite: Uint8ClampedArray | null = null;
 
   while (offset < bytes.length) {
     const blockType = bytes[offset];
 
     if (blockType === 0x21) {
+      // Extension block
       const extensionLabel = bytes[offset + 1];
+
       if (extensionLabel === 0xf9) {
+        // Graphics Control Extension
+        const packed = bytes[offset + 3];
+        disposalMethod = (packed >> 2) & 0x07;
+        const hasTransparency = (packed & 0x01) !== 0;
         delay = (bytes[offset + 4] | (bytes[offset + 5] << 8)) * 10;
+        if (delay === 0) delay = 100;
+        transparentIndex = hasTransparency ? bytes[offset + 6] : -1;
       }
+
+      // Skip extension block
       offset += 2;
       while (offset < bytes.length && bytes[offset] !== 0) {
         offset += bytes[offset] + 1;
       }
       if (offset < bytes.length) offset++;
     } else if (blockType === 0x2c) {
+      // Image Descriptor
       const imgLeft = bytes[offset + 1] | (bytes[offset + 2] << 8);
       const imgTop = bytes[offset + 3] | (bytes[offset + 4] << 8);
       const imgWidth = bytes[offset + 5] | (bytes[offset + 6] << 8);
@@ -172,34 +185,64 @@ async function decodeGif(file: File): Promise<Frame[]> {
 
       const decoded = decodeLZW(lzwData, lzwMinCodeSize);
 
-      if (!compositeBuffer) {
-        compositeBuffer = new Uint8ClampedArray(width * height * 4);
-        for (let i = 0; i < width * height; i++) {
-          compositeBuffer[i * 4 + 3] = 0;
-        }
+      // Сохраняем предыдущее состояние для disposal=3
+      if (disposalMethod === 3) {
+        previousComposite = new Uint8ClampedArray(composite);
       }
 
+      // Рисуем кадр на композитный буфер
       for (let y = 0; y < imgHeight; y++) {
         for (let x = 0; x < imgWidth; x++) {
           const srcIdx = y * imgWidth + x;
           const colorIdx = decoded[srcIdx];
-          if (colorIdx !== undefined && colorIdx < palette.length) {
-            const [r, g, b] = palette[colorIdx];
-            const dstIdx = ((imgTop + y) * width + (imgLeft + x)) * 4;
-            compositeBuffer[dstIdx] = r;
-            compositeBuffer[dstIdx + 1] = g;
-            compositeBuffer[dstIdx + 2] = b;
-            compositeBuffer[dstIdx + 3] = 255;
-          }
+
+          if (colorIdx === undefined || colorIdx >= palette.length) continue;
+
+          // Прозрачный индекс — пропускаем
+          if (colorIdx === transparentIndex) continue;
+
+          const [r, g, b] = palette[colorIdx];
+          const dstX = imgLeft + x;
+          const dstY = imgTop + y;
+
+          if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
+
+          const dstIdx = (dstY * width + dstX) * 4;
+          composite[dstIdx] = r;
+          composite[dstIdx + 1] = g;
+          composite[dstIdx + 2] = b;
+          composite[dstIdx + 3] = 255;
         }
       }
 
+      // Сохраняем кадр как копию текущего композита
       frames.push({
-        rgba: new Uint8ClampedArray(compositeBuffer),
+        rgba: new Uint8ClampedArray(composite),
         delay,
         width,
         height,
       });
+
+      // Обработка disposal method для следующего кадра
+      if (disposalMethod === 2) {
+        // Restore to background — очищаем область кадра
+        for (let y = 0; y < imgHeight; y++) {
+          for (let x = 0; x < imgWidth; x++) {
+            const dstX = imgLeft + x;
+            const dstY = imgTop + y;
+            if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
+            const dstIdx = (dstY * width + dstX) * 4;
+            composite[dstIdx] = 255;
+            composite[dstIdx + 1] = 255;
+            composite[dstIdx + 2] = 255;
+            composite[dstIdx + 3] = 255;
+          }
+        }
+      } else if (disposalMethod === 3 && previousComposite) {
+        // Restore to previous
+        composite.set(previousComposite);
+      }
+      // disposal 0 и 1 — ничего не делаем, кадр остаётся
     } else if (blockType === 0x3b) {
       break;
     } else {
@@ -321,7 +364,7 @@ function generateDisplacementField(
   seed: number,
   amplitude: number,
   frequency: number
-): DisplacementField {
+): { dx: Float32Array; dy: Float32Array } {
   const dx = new Float32Array(width * height);
   const dy = new Float32Array(width * height);
 
@@ -334,12 +377,13 @@ function generateDisplacementField(
     }
   }
 
-  return { dx, dy, width, height };
+  return { dx, dy };
 }
 
 function warpFrame(
   source: Uint8ClampedArray,
-  field: DisplacementField,
+  dx: Float32Array,
+  dy: Float32Array,
   width: number,
   height: number
 ): Uint8ClampedArray {
@@ -348,8 +392,8 @@ function warpFrame(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      const srcX = x + field.dx[idx];
-      const srcY = y + field.dy[idx];
+      const srcX = x + dx[idx];
+      const srcY = y + dy[idx];
 
       const x0 = Math.floor(srcX);
       const y0 = Math.floor(srcY);
@@ -388,7 +432,7 @@ function warpFrame(
 }
 
 // ============================================================
-// BLOCK SHUFFLE
+// BLOCK SHUFFLE (перестановка блоков — меняет форму)
 // ============================================================
 function blockShuffle(
   source: Uint8ClampedArray,
@@ -442,7 +486,7 @@ function blockShuffle(
 }
 
 // ============================================================
-// SWIRL
+// SWIRL (закручивание — меняет форму)
 // ============================================================
 function swirl(
   source: Uint8ClampedArray,
@@ -498,7 +542,7 @@ function swirl(
 }
 
 // ============================================================
-// EDGE DISTORT
+// EDGE DISTORT (искажение контуров)
 // ============================================================
 function distortEdges(
   source: Uint8ClampedArray,
@@ -641,20 +685,16 @@ async function generateVariations(
         temporalAmplitude
       );
 
-      const temporalField: DisplacementField = {
-        dx,
-        dy,
-        width: baseField.width,
-        height: baseField.height,
-      };
-
+      // 1. Warp (displacement)
       const warped = warpFrame(
         originalFrame.rgba,
-        temporalField,
+        dx,
+        dy,
         originalFrame.width,
         originalFrame.height
       );
 
+      // 2. Block shuffle (перестановка блоков)
       const shuffled = blockShuffle(
         warped,
         originalFrame.width,
@@ -663,6 +703,7 @@ async function generateVariations(
         similarity
       );
 
+      // 3. Swirl (закручивание)
       const swirled = swirl(
         shuffled,
         originalFrame.width,
@@ -671,6 +712,7 @@ async function generateVariations(
         similarity
       );
 
+      // 4. Edge distort (искажение контуров)
       const distorted = distortEdges(
         swirled,
         originalFrame.width,
@@ -693,7 +735,6 @@ async function generateVariations(
       id: `variation_${String(i + 1).padStart(2, "0")}`,
       url: URL.createObjectURL(blob),
       bytes: blob.size,
-      seed,
     });
 
     if (onProgress) onProgress((i + 1) / count);
@@ -742,6 +783,9 @@ function Studio() {
     setError(null);
     try {
       const decodedFrames = await decodeGif(file);
+      if (decodedFrames.length === 0) {
+        throw new Error("No frames decoded — the GIF may be corrupted");
+      }
       setFrames(decodedFrames);
       setStage("ready");
     } catch (e) {

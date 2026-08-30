@@ -6,8 +6,9 @@ export interface Frame {
 }
 
 export interface VariationConfig {
-  similarity: number; // 0-100
-  count: number;      // 1-100
+  similarity: number;      // 0-100
+  count: number;           // 1-100
+  shapeVariation?: number; // 0-100, depth of form/shape changes
 }
 
 export interface VariationResult {
@@ -24,11 +25,18 @@ export interface DisplacementField {
   height: number;
 }
 
+export type ColorMode = 'shift' | 'duotone' | 'posterize' | 'channel-rotate' | 'solarize' | 'gradient-tint';
+
 export interface ColorTransform {
   hueShift: number;
   saturationMul: number;
   lightnessShift: number;
   contrastMul: number;
+  mode: ColorMode;
+  tintHue: number;
+  tintHue2: number;
+  tintMix: number;
+  posterizeLevels: number;
 }
 
 export interface MotionMask {

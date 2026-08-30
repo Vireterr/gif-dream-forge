@@ -2,14 +2,15 @@
  * GIF Encoder using gifenc library
  */
 
-import { GIFEncoder, quantize, applyPalette } from 'gifenc';
 import type { Frame } from './types';
 
 /**
  * Encode frames to a GIF blob
  */
 export async function encodeGif(frames: Frame[]): Promise<Blob> {
+  const { GIFEncoder, quantize, applyPalette } = await import('gifenc');
   const gif = GIFEncoder();
+
   
   if (frames.length === 0) {
     throw new Error('No frames to encode');

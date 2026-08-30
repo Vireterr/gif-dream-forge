@@ -1,20 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { GIFEncoder, quantize, applyPalette } from "gifenc";
-
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "GIF Variation Studio" },
-      {
-        name: "description",
-        content:
-          "Upload a GIF and generate multiple visual variations while preserving its identity.",
-      },
-    ],
-  }),
-  component: Studio,
-});
 
 // ============================================================
 // TYPES
@@ -24,11 +9,6 @@ interface Frame {
   delay: number;
   width: number;
   height: number;
-}
-
-interface VariationConfig {
-  similarity: number; // 0-100
-  count: number;      // 1-100
 }
 
 interface VariationResult {
@@ -46,7 +26,7 @@ interface DisplacementField {
 }
 
 // ============================================================
-// NOISE UTILITIES
+// NOISE
 // ============================================================
 function hash(n: number): number {
   n = n | 0;
@@ -80,7 +60,7 @@ function perlinNoise2D(x: number, y: number, seed: number): number {
   return nx0 + (nx1 - nx0) * uy;
 }
 
-function fbmNoise2D(x: number, y: number, seed: number, octaves: number = 4): number {
+function fbmNoise2D(x: number, y: number, seed: number, octaves = 4): number {
   let value = 0;
   let amplitude = 0.5;
   let frequency = 1;
@@ -92,14 +72,13 @@ function fbmNoise2D(x: number, y: number, seed: number, octaves: number = 4): nu
   return value;
 }
 
-// Детерминированный random на основе seed
 function detRand(seed: number, offset: number): number {
   const x = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
   return x - Math.floor(x);
 }
 
 // ============================================================
-// GIF DECODER (ручной парсинг + LZW)
+// GIF DECODER
 // ============================================================
 async function decodeGif(file: File): Promise<Frame[]> {
   const buffer = await file.arrayBuffer();
@@ -153,7 +132,9 @@ async function decodeGif(file: File): Promise<Frame[]> {
 
       offset += 10;
 
-      const palette: [number, number, number][] = hasLocalColorTable ? [] : globalPalette;
+      const palette: [number, number, number][] = hasLocalColorTable
+        ? []
+        : globalPalette;
       if (hasLocalColorTable) {
         for (let i = 0; i < localColorTableSize; i++) {
           palette.push([bytes[offset], bytes[offset + 1], bytes[offset + 2]]);
@@ -176,7 +157,6 @@ async function decodeGif(file: File): Promise<Frame[]> {
 
       const decoded = decodeLZW(lzwData, lzwMinCodeSize);
 
-      // Композитинг: каждый кадр рисуем поверх предыдущего
       if (!compositeBuffer) {
         compositeBuffer = new Uint8ClampedArray(width * height * 4);
         for (let i = 0; i < width * height; i++) {
@@ -318,7 +298,7 @@ async function encodeGif(frames: Frame[]): Promise<Blob> {
 }
 
 // ============================================================
-// DISPLACEMENT FIELD (Perlin noise)
+// DISPLACEMENT + WARP
 // ============================================================
 function generateDisplacementField(
   width: number,
@@ -334,16 +314,14 @@ function generateDisplacementField(
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       dx[idx] = (fbmNoise2D(x * frequency, y * frequency, seed) - 0.5) * 2 * amplitude;
-      dy[idx] = (fbmNoise2D(x * frequency, y * frequency, seed + 10000) - 0.5) * 2 * amplitude;
+      dy[idx] =
+        (fbmNoise2D(x * frequency, y * frequency, seed + 10000) - 0.5) * 2 * amplitude;
     }
   }
 
   return { dx, dy, width, height };
 }
 
-// ============================================================
-// BILINEAR WARP
-// ============================================================
 function warpFrame(
   source: Uint8ClampedArray,
   field: DisplacementField,
@@ -418,7 +396,7 @@ function blockShuffle(
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
       const r = detRand(seed, by * blocksX + bx);
-      if (r > 0.3) continue; // только 30% блоков переставляются
+      if (r > 0.3) continue;
 
       const otherBx = Math.floor(detRand(seed, by * blocksX + bx + 1000) * blocksX);
       const otherBy = Math.floor(detRand(seed, by * blocksX + bx + 2000) * blocksY);
@@ -505,7 +483,7 @@ function swirl(
 }
 
 // ============================================================
-// EDGE DISTORT (искажение контуров — меняет форму)
+// EDGE DISTORT (искажение контуров)
 // ============================================================
 function distortEdges(
   source: Uint8ClampedArray,
@@ -521,8 +499,8 @@ function distortEdges(
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const idx = (y * width + x) * 4;
-      const right = ((y * width + x + 1) * 4);
-      const below = (((y + 1) * width + x) * 4);
+      const right = (y * width + x + 1) * 4;
+      const below = ((y + 1) * width + x) * 4;
 
       const diffR =
         Math.abs(source[idx] - source[right]) +
@@ -549,7 +527,7 @@ function distortEdges(
 }
 
 // ============================================================
-// TEMPORAL CONSISTENCY (motion mask + плавная модуляция)
+// TEMPORAL CONSISTENCY
 // ============================================================
 function computeMotionMask(frames: Frame[]): Uint8Array {
   if (frames.length < 2) {
@@ -590,7 +568,7 @@ function applyTemporalConsistency(
 
   for (let i = 0; i < displacement.length; i++) {
     const motion = motionMask[i];
-    const motionReduction = motion * 0.15; // ослаблено, чтобы не подавлять форму
+    const motionReduction = motion * 0.15;
     result[i] = displacement[i] * (1 - motionReduction) + temporalFactor;
   }
 
@@ -598,19 +576,17 @@ function applyTemporalConsistency(
 }
 
 // ============================================================
-// VARIATION ENGINE (главный orchestrator)
+// VARIATION ENGINE
 // ============================================================
 async function generateVariations(
   frames: Frame[],
-  config: VariationConfig,
+  similarity: number,
+  count: number,
   onProgress?: (progress: number) => void,
   onCancel?: () => boolean
 ): Promise<VariationResult[]> {
-  const { similarity, count } = config;
-
   const motionMask = computeMotionMask(frames);
 
-  // Усиленные параметры для реального изменения формы
   const displacementAmplitude = ((100 - similarity) / 100) * 35;
   const displacementFrequency = 0.05 + ((100 - similarity) / 100) * 0.15;
   const temporalAmplitude = displacementAmplitude * 0.15;
@@ -657,7 +633,6 @@ async function generateVariations(
         height: baseField.height,
       };
 
-      // 1. Warp (displacement)
       const warped = warpFrame(
         originalFrame.rgba,
         temporalField,
@@ -665,7 +640,6 @@ async function generateVariations(
         originalFrame.height
       );
 
-      // 2. Block shuffle (перестановка блоков)
       const shuffled = blockShuffle(
         warped,
         originalFrame.width,
@@ -674,7 +648,6 @@ async function generateVariations(
         similarity
       );
 
-      // 3. Swirl (закручивание)
       const swirled = swirl(
         shuffled,
         originalFrame.width,
@@ -683,7 +656,6 @@ async function generateVariations(
         similarity
       );
 
-      // 4. Edge distort (искажение контуров)
       const distorted = distortEdges(
         swirled,
         originalFrame.width,
@@ -692,7 +664,6 @@ async function generateVariations(
         similarity
       );
 
-      // Цвет НЕ меняем — только форма
       variationFrames.push({
         rgba: new Uint8ClampedArray(distorted),
         delay: originalFrame.delay,
@@ -712,7 +683,6 @@ async function generateVariations(
 
     if (onProgress) onProgress((i + 1) / count);
 
-    // Yield для браузера
     await new Promise((r) => setTimeout(r, 0));
   }
 
@@ -720,11 +690,11 @@ async function generateVariations(
 }
 
 // ============================================================
-// UI COMPONENT
+// UI
 // ============================================================
 type Stage = "idle" | "decoding" | "ready" | "generating";
 
-function Studio() {
+export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [frames, setFrames] = useState<Frame[] | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
@@ -776,7 +746,8 @@ function Studio() {
     try {
       const results = await generateVariations(
         frames,
-        { similarity, count },
+        similarity,
+        count,
         (progress) => {
           if (cancelRef.current) throw new Error("Cancelled");
           setProgress(progress);
@@ -807,10 +778,21 @@ function Studio() {
 
   const busy = stage === "decoding" || stage === "generating";
 
+  const similarityLabel =
+    similarity === 100
+      ? "Minimal changes"
+      : similarity >= 90
+      ? "Very close variation"
+      : similarity >= 75
+      ? "Noticeable variation"
+      : similarity >= 50
+      ? "Moderate variation"
+      : "Free variation";
+
   return (
-    <main className="mx-auto max-w-6xl px-5 py-10 md:py-16 bg-[#05060c] text-white min-h-screen">
+    <main className="mx-auto max-w-6xl px-5 py-10 md:py-16 bg-slate-950 text-white min-h-screen">
       <header className="mb-10">
-        <p className="text-[11px] tracking-widest text-white/70">
+        <p className="text-[11px] tracking-widest text-white/70 uppercase">
           GIF Variation Studio
         </p>
         <h1 className="mt-2 text-4xl font-bold md:text-5xl">
@@ -818,7 +800,8 @@ function Studio() {
         </h1>
         <p className="mt-3 max-w-2xl text-white/60">
           Upload a GIF and generate multiple variations that preserve its visual
-          identity while changing its shape.
+          identity while changing its shape. Colors stay the same — only form
+          transforms.
         </p>
       </header>
 
@@ -843,36 +826,42 @@ function Studio() {
             <p className="text-sm text-white/60">one file · processed locally</p>
             <button
               onClick={() => inputRef.current?.click()}
-              className="mt-2 rounded-md border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+              className="mt-2 rounded-md border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15 transition"
             >
               Choose file
             </button>
             {file && (
-              <p className="text-[11px] tracking-widest mt-2">{file.name}</p>
+              <p className="text-[11px] tracking-widest mt-2 text-white/70">
+                {file.name}
+              </p>
             )}
           </div>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && (
+            <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
+              {error}
+            </p>
+          )}
 
           <div className="flex flex-wrap items-center gap-3">
             <button
               disabled={!file || busy}
               onClick={decode}
-              className="rounded-md bg-white/10 px-5 py-2.5 text-sm font-semibold hover:bg-white/15 disabled:opacity-40"
+              className="rounded-md bg-white/10 px-5 py-2.5 text-sm font-semibold hover:bg-white/15 disabled:opacity-40 transition"
             >
               {stage === "decoding" ? "Decoding…" : "Decode GIF"}
             </button>
             <button
               disabled={!frames || busy}
               onClick={generate}
-              className="rounded-md bg-cyan-500/20 border border-cyan-500/50 px-5 py-2.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/30 disabled:opacity-40"
+              className="rounded-md bg-cyan-500/20 border border-cyan-500/50 px-5 py-2.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/30 disabled:opacity-40 transition"
             >
               Generate {count} Variations
             </button>
             {stage === "generating" && (
               <button
                 onClick={() => (cancelRef.current = true)}
-                className="rounded-md border border-white/10 px-4 py-2.5 text-sm hover:bg-white/5"
+                className="rounded-md border border-white/10 px-4 py-2.5 text-sm hover:bg-white/5 transition"
               >
                 Stop
               </button>
@@ -880,7 +869,7 @@ function Studio() {
             {variations.length > 0 && stage !== "generating" && (
               <button
                 onClick={downloadAll}
-                className="rounded-md border border-white/10 px-4 py-2.5 text-sm hover:bg-white/5"
+                className="rounded-md border border-white/10 px-4 py-2.5 text-sm hover:bg-white/5 transition"
               >
                 Download all
               </button>
@@ -898,7 +887,7 @@ function Studio() {
 
           {variations.length > 0 && (
             <div>
-              <p className="text-[11px] tracking-widest mb-3">
+              <p className="text-[11px] tracking-widest mb-3 text-white/70 uppercase">
                 Variations · {variations.length} files
               </p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
@@ -907,7 +896,7 @@ function Studio() {
                     key={variation.id}
                     href={variation.url}
                     download={`${variation.id}.gif`}
-                    className="group overflow-hidden rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.05]"
+                    className="group overflow-hidden rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.05] transition"
                   >
                     <img
                       src={variation.url}
@@ -916,7 +905,7 @@ function Studio() {
                       loading="lazy"
                     />
                     <div className="flex items-center justify-between px-2 py-1.5">
-                      <span className="text-[11px] tracking-widest">
+                      <span className="text-[11px] tracking-widest text-white/80">
                         {variation.id}
                       </span>
                       <span className="text-[10px] text-white/60">
@@ -931,11 +920,13 @@ function Studio() {
         </section>
 
         <aside className="space-y-5 p-5 rounded-lg border border-white/10 bg-white/[0.02] h-fit">
-          <h2 className="text-lg">Settings</h2>
+          <h2 className="text-lg font-semibold">Settings</h2>
 
           {frames && (
             <div className="space-y-2">
-              <p className="text-[11px] tracking-widest">Source GIF</p>
+              <p className="text-[11px] tracking-widest text-white/70 uppercase">
+                Source GIF
+              </p>
               <dl className="grid grid-cols-2 gap-2 text-xs text-white/60">
                 <div>frames · {frames.length}</div>
                 <div>
@@ -943,7 +934,9 @@ function Studio() {
                 </div>
                 <div>
                   duration ·{" "}
-                  {(frames.reduce((sum, f) => sum + f.delay, 0) / 1000).toFixed(1)}
+                  {(
+                    frames.reduce((sum, f) => sum + f.delay, 0) / 1000
+                  ).toFixed(1)}
                   s
                 </div>
                 <div>fps · {Math.round(1000 / frames[0].delay)}</div>
@@ -953,7 +946,7 @@ function Studio() {
 
           <div className="space-y-4 border-t border-white/10 pt-4">
             <label className="block">
-              <span className="text-[11px] tracking-widest">
+              <span className="text-[11px] tracking-widest text-white/70 uppercase">
                 Similarity · {similarity}%
               </span>
               <input
@@ -965,17 +958,11 @@ function Studio() {
                 onChange={(e) => setSimilarity(Number(e.target.value))}
                 className="mt-2 w-full accent-cyan-500"
               />
-              <p className="mt-1 text-xs text-white/60">
-                {similarity === 100 && "Minimal changes"}
-                {similarity >= 90 && similarity < 100 && "Very close variation"}
-                {similarity >= 75 && similarity < 90 && "Noticeable variation"}
-                {similarity >= 50 && similarity < 75 && "Moderate variation"}
-                {similarity < 50 && "Free variation"}
-              </p>
+              <p className="mt-1 text-xs text-white/60">{similarityLabel}</p>
             </label>
 
             <label className="block">
-              <span className="text-[11px] tracking-widest">
+              <span className="text-[11px] tracking-widest text-white/70 uppercase">
                 Number of variations · {count}
               </span>
               <input
@@ -991,7 +978,9 @@ function Studio() {
           </div>
 
           <div className="border-t border-white/10 pt-4">
-            <p className="text-[11px] tracking-widest mb-2">How it works</p>
+            <p className="text-[11px] tracking-widest mb-2 text-white/70 uppercase">
+              How it works
+            </p>
             <ul className="space-y-1 text-xs text-white/60">
               <li>• Displacement fields (Perlin noise)</li>
               <li>• Bilinear interpolation warping</li>

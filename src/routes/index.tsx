@@ -6,7 +6,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "GIF Variation Studio" },
-      { name: "description", content: "Upload a GIF and generate visual variations." },
+      { name: "description", content: "Upload a GIF and generate multiple visual variations while preserving its identity." },
     ],
   }),
   component: Studio,
@@ -26,6 +26,11 @@ interface VariationResult {
   id: string;
   url: string;
   bytes: number;
+}
+
+interface DisplacementField {
+  dx: Float32Array;
+  dy: Float32Array;
 }
 
 // ============================================================
@@ -81,7 +86,7 @@ function detRand(seed: number, offset: number): number {
 }
 
 // ============================================================
-// GIF DECODER (правильный — с disposal method и прозрачностью)
+// GIF DECODER (с disposal method и прозрачностью)
 // ============================================================
 async function decodeGif(file: File): Promise<Frame[]> {
   const buffer = await file.arrayBuffer();
@@ -111,9 +116,7 @@ async function decodeGif(file: File): Promise<Frame[]> {
   let transparentIndex = -1;
   let disposalMethod = 0;
 
-  // Композитный буфер — хранит текущее состояние canvas
   const composite = new Uint8ClampedArray(width * height * 4);
-  // Заполняем белым фоном (как браузер)
   for (let i = 0; i < width * height; i++) {
     composite[i * 4] = 255;
     composite[i * 4 + 1] = 255;
@@ -121,18 +124,15 @@ async function decodeGif(file: File): Promise<Frame[]> {
     composite[i * 4 + 3] = 255;
   }
 
-  // Сохранение предыдущего состояния для disposal=3
   let previousComposite: Uint8ClampedArray | null = null;
 
   while (offset < bytes.length) {
     const blockType = bytes[offset];
 
     if (blockType === 0x21) {
-      // Extension block
       const extensionLabel = bytes[offset + 1];
 
       if (extensionLabel === 0xf9) {
-        // Graphics Control Extension
         const packed = bytes[offset + 3];
         disposalMethod = (packed >> 2) & 0x07;
         const hasTransparency = (packed & 0x01) !== 0;
@@ -141,14 +141,12 @@ async function decodeGif(file: File): Promise<Frame[]> {
         transparentIndex = hasTransparency ? bytes[offset + 6] : -1;
       }
 
-      // Skip extension block
       offset += 2;
       while (offset < bytes.length && bytes[offset] !== 0) {
         offset += bytes[offset] + 1;
       }
       if (offset < bytes.length) offset++;
     } else if (blockType === 0x2c) {
-      // Image Descriptor
       const imgLeft = bytes[offset + 1] | (bytes[offset + 2] << 8);
       const imgTop = bytes[offset + 3] | (bytes[offset + 4] << 8);
       const imgWidth = bytes[offset + 5] | (bytes[offset + 6] << 8);
@@ -185,20 +183,16 @@ async function decodeGif(file: File): Promise<Frame[]> {
 
       const decoded = decodeLZW(lzwData, lzwMinCodeSize);
 
-      // Сохраняем предыдущее состояние для disposal=3
       if (disposalMethod === 3) {
         previousComposite = new Uint8ClampedArray(composite);
       }
 
-      // Рисуем кадр на композитный буфер
       for (let y = 0; y < imgHeight; y++) {
         for (let x = 0; x < imgWidth; x++) {
           const srcIdx = y * imgWidth + x;
           const colorIdx = decoded[srcIdx];
 
           if (colorIdx === undefined || colorIdx >= palette.length) continue;
-
-          // Прозрачный индекс — пропускаем
           if (colorIdx === transparentIndex) continue;
 
           const [r, g, b] = palette[colorIdx];
@@ -215,7 +209,6 @@ async function decodeGif(file: File): Promise<Frame[]> {
         }
       }
 
-      // Сохраняем кадр как копию текущего композита
       frames.push({
         rgba: new Uint8ClampedArray(composite),
         delay,
@@ -223,9 +216,7 @@ async function decodeGif(file: File): Promise<Frame[]> {
         height,
       });
 
-      // Обработка disposal method для следующего кадра
       if (disposalMethod === 2) {
-        // Restore to background — очищаем область кадра
         for (let y = 0; y < imgHeight; y++) {
           for (let x = 0; x < imgWidth; x++) {
             const dstX = imgLeft + x;
@@ -239,10 +230,8 @@ async function decodeGif(file: File): Promise<Frame[]> {
           }
         }
       } else if (disposalMethod === 3 && previousComposite) {
-        // Restore to previous
         composite.set(previousComposite);
       }
-      // disposal 0 и 1 — ничего не делаем, кадр остаётся
     } else if (blockType === 0x3b) {
       break;
     } else {
@@ -356,7 +345,7 @@ async function encodeGif(frames: Frame[]): Promise<Blob> {
 }
 
 // ============================================================
-// DISPLACEMENT + WARP
+// DISPLACEMENT + WARP (УСИЛЕННЫЙ)
 // ============================================================
 function generateDisplacementField(
   width: number,
@@ -364,7 +353,7 @@ function generateDisplacementField(
   seed: number,
   amplitude: number,
   frequency: number
-): { dx: Float32Array; dy: Float32Array } {
+): DisplacementField {
   const dx = new Float32Array(width * height);
   const dy = new Float32Array(width * height);
 
@@ -432,7 +421,7 @@ function warpFrame(
 }
 
 // ============================================================
-// BLOCK SHUFFLE (перестановка блоков — меняет форму)
+// BLOCK SHUFFLE (УСИЛЕННЫЙ — большие блоки)
 // ============================================================
 function blockShuffle(
   source: Uint8ClampedArray,
@@ -443,8 +432,9 @@ function blockShuffle(
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(source);
 
-  const blockSize = Math.max(4, Math.floor(((100 - similarity) / 100) * 20));
-  if (blockSize < 4) return output;
+  // УСИЛЕНО: от 8 до 40 пикселей (было 4-20)
+  const blockSize = Math.max(8, Math.floor(((100 - similarity) / 100) * 40));
+  if (blockSize < 8) return output;
 
   const blocksX = Math.floor(width / blockSize);
   const blocksY = Math.floor(height / blockSize);
@@ -455,7 +445,7 @@ function blockShuffle(
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
       const r = detRand(seed, by * blocksX + bx);
-      if (r > 0.3) continue;
+      if (r > 0.4) continue; // 40% блоков переставляются (было 30%)
 
       const otherBx = Math.floor(detRand(seed, by * blocksX + bx + 1000) * blocksX);
       const otherBy = Math.floor(detRand(seed, by * blocksX + bx + 2000) * blocksY);
@@ -486,7 +476,7 @@ function blockShuffle(
 }
 
 // ============================================================
-// SWIRL (закручивание — меняет форму)
+// SWIRL (УСИЛЕННЫЙ — больший угол)
 // ============================================================
 function swirl(
   source: Uint8ClampedArray,
@@ -497,12 +487,14 @@ function swirl(
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(width * height * 4);
 
-  const maxAngle = ((100 - similarity) / 100) * Math.PI * 2;
+  // УСИЛЕНО: до 3π (было 2π)
+  const maxAngle = ((100 - similarity) / 100) * Math.PI * 3;
   if (maxAngle < 0.1) return new Uint8ClampedArray(source);
 
   const cx = width * (0.3 + detRand(seed, 0) * 0.4);
   const cy = height * (0.3 + detRand(seed, 1) * 0.4);
-  const radius = Math.min(width, height) * (0.2 + detRand(seed, 2) * 0.3);
+  // УСИЛЕНО: радиус до 50% (было 20-50%)
+  const radius = Math.min(width, height) * (0.3 + detRand(seed, 2) * 0.2);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -542,7 +534,7 @@ function swirl(
 }
 
 // ============================================================
-// EDGE DISTORT (искажение контуров)
+// EDGE DISTORT (УСИЛЕННЫЙ)
 // ============================================================
 function distortEdges(
   source: Uint8ClampedArray,
@@ -552,7 +544,8 @@ function distortEdges(
   similarity: number
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(source);
-  const maxEdgeShift = Math.floor(((100 - similarity) / 100) * 4);
+  // УСИЛЕНО: до 8 пикселей (было 4)
+  const maxEdgeShift = Math.floor(((100 - similarity) / 100) * 8);
   if (maxEdgeShift < 1) return output;
 
   for (let y = 1; y < height - 1; y++) {
@@ -635,7 +628,7 @@ function applyTemporalConsistency(
 }
 
 // ============================================================
-// VARIATION ENGINE
+// VARIATION ENGINE (УСИЛЕННЫЕ ПАРАМЕТРЫ)
 // ============================================================
 async function generateVariations(
   frames: Frame[],
@@ -646,8 +639,10 @@ async function generateVariations(
 ): Promise<VariationResult[]> {
   const motionMask = computeMotionMask(frames);
 
-  const displacementAmplitude = ((100 - similarity) / 100) * 35;
-  const displacementFrequency = 0.05 + ((100 - similarity) / 100) * 0.15;
+  // УСИЛЕНО: амплитуда до 50px (было 35)
+  const displacementAmplitude = ((100 - similarity) / 100) * 50;
+  // УСИЛЕНО: частота до 0.25 (было 0.15) — более детальные искажения
+  const displacementFrequency = 0.05 + ((100 - similarity) / 100) * 0.2;
   const temporalAmplitude = displacementAmplitude * 0.15;
 
   const results: VariationResult[] = [];

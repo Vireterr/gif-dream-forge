@@ -1,5 +1,20 @@
+import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { GIFEncoder, quantize, applyPalette } from "gifenc";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "GIF Variation Studio" },
+      {
+        name: "description",
+        content:
+          "Upload a GIF and generate multiple visual variations while preserving its identity.",
+      },
+    ],
+  }),
+  component: Studio,
+});
 
 // ============================================================
 // TYPES
@@ -373,7 +388,7 @@ function warpFrame(
 }
 
 // ============================================================
-// BLOCK SHUFFLE (перестановка блоков — меняет форму)
+// BLOCK SHUFFLE
 // ============================================================
 function blockShuffle(
   source: Uint8ClampedArray,
@@ -427,7 +442,7 @@ function blockShuffle(
 }
 
 // ============================================================
-// SWIRL (закручивание — меняет форму)
+// SWIRL
 // ============================================================
 function swirl(
   source: Uint8ClampedArray,
@@ -483,7 +498,7 @@ function swirl(
 }
 
 // ============================================================
-// EDGE DISTORT (искажение контуров)
+// EDGE DISTORT
 // ============================================================
 function distortEdges(
   source: Uint8ClampedArray,
@@ -694,7 +709,7 @@ async function generateVariations(
 // ============================================================
 type Stage = "idle" | "decoding" | "ready" | "generating";
 
-export default function App() {
+function Studio() {
   const [file, setFile] = useState<File | null>(null);
   const [frames, setFrames] = useState<Frame[] | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
@@ -790,7 +805,7 @@ export default function App() {
       : "Free variation";
 
   return (
-    <main className="mx-auto max-w-6xl px-5 py-10 md:py-16 bg-slate-950 text-white min-h-screen">
+    <main className="mx-auto max-w-6xl px-5 py-10 md:py-16 bg-[#05060c] text-white min-h-screen">
       <header className="mb-10">
         <p className="text-[11px] tracking-widest text-white/70 uppercase">
           GIF Variation Studio

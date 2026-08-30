@@ -6,24 +6,28 @@
 // Precomputed permutation table (4096 entries)
 const noiseTable = new Uint8Array(4096);
 
-// Initialize noise table with pseudo-random values
+// Initialize noise table with deterministic pseudo-random values
 function initNoiseTable() {
   const p = new Uint8Array(256);
   for (let i = 0; i < 256; i++) p[i] = i;
-  
-  // Shuffle
+
+  // Deterministic shuffle
+  const rand = mulberry32(0x9e3779b9);
   for (let i = 255; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [p[i], p[j]] = [p[j], p[i]];
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = p[i]!;
+    p[i] = p[j]!;
+    p[j] = tmp;
   }
-  
+
   // Fill 4096 table
   for (let i = 0; i < 4096; i++) {
-    noiseTable[i] = p[i & 255];
+    noiseTable[i] = p[i & 255]!;
   }
 }
 
 initNoiseTable();
+
 
 /**
  * Fast hash function for integer coordinates

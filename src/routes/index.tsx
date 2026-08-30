@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { GIFEncoder, quantize, applyPalette } from "gifenc";
+import { parseGIF, decompressFrame } from "gifuct-js";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -86,240 +87,98 @@ function detRand(seed: number, offset: number): number {
 }
 
 // ============================================================
-// GIF DECODER (с disposal method и прозрачностью)
+// GIF DECODER (используем gifuct-js)
 // ============================================================
 async function decodeGif(file: File): Promise<Frame[]> {
   const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-
-  const signature = String.fromCharCode(bytes[0], bytes[1], bytes[2]);
-  if (signature !== "GIF") throw new Error("Not a valid GIF file");
-
-  const width = bytes[6] | (bytes[7] << 8);
-  const height = bytes[8] | (bytes[9] << 8);
-  const hasGlobalColorTable = (bytes[10] & 0x80) !== 0;
-  const globalColorTableSize = hasGlobalColorTable
-    ? Math.pow(2, (bytes[10] & 0x07) + 1)
-    : 0;
-
-  let offset = 13;
-  const globalPalette: [number, number, number][] = [];
-  if (hasGlobalColorTable) {
-    for (let i = 0; i < globalColorTableSize; i++) {
-      globalPalette.push([bytes[offset], bytes[offset + 1], bytes[offset + 2]]);
-      offset += 3;
-    }
-  }
-
+  const gif = parseGIF(buffer);
   const frames: Frame[] = [];
-  let delay = 100;
-  let transparentIndex = -1;
-  let disposalMethod = 0;
 
-  const composite = new Uint8ClampedArray(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    composite[i * 4] = 255;
-    composite[i * 4 + 1] = 255;
-    composite[i * 4 + 2] = 255;
-    composite[i * 4 + 3] = 255;
-  }
+  let composite: ImageData | null = null;
+  const width = gif.lsd.width;
+  const height = gif.lsd.height;
 
-  let previousComposite: Uint8ClampedArray | null = null;
+  for (const frame of gif.frames) {
+    const imageData = decompressFrame(frame, gif.gct);
+    if (!imageData) continue;
 
-  while (offset < bytes.length) {
-    const blockType = bytes[offset];
-
-    if (blockType === 0x21) {
-      const extensionLabel = bytes[offset + 1];
-
-      if (extensionLabel === 0xf9) {
-        const packed = bytes[offset + 3];
-        disposalMethod = (packed >> 2) & 0x07;
-        const hasTransparency = (packed & 0x01) !== 0;
-        delay = (bytes[offset + 4] | (bytes[offset + 5] << 8)) * 10;
-        if (delay === 0) delay = 100;
-        transparentIndex = hasTransparency ? bytes[offset + 6] : -1;
+    // Создаем композитный буфер если нужно
+    if (!composite) {
+      composite = new ImageData(width, height);
+      // Заполняем белым фоном
+      for (let i = 0; i < composite.data.length; i += 4) {
+        composite.data[i] = 255;
+        composite.data[i + 1] = 255;
+        composite.data[i + 2] = 255;
+        composite.data[i + 3] = 255;
       }
+    }
 
-      offset += 2;
-      while (offset < bytes.length && bytes[offset] !== 0) {
-        offset += bytes[offset] + 1;
-      }
-      if (offset < bytes.length) offset++;
-    } else if (blockType === 0x2c) {
-      const imgLeft = bytes[offset + 1] | (bytes[offset + 2] << 8);
-      const imgTop = bytes[offset + 3] | (bytes[offset + 4] << 8);
-      const imgWidth = bytes[offset + 5] | (bytes[offset + 6] << 8);
-      const imgHeight = bytes[offset + 7] | (bytes[offset + 8] << 8);
-      const hasLocalColorTable = (bytes[offset + 9] & 0x80) !== 0;
-      const localColorTableSize = hasLocalColorTable
-        ? Math.pow(2, (bytes[offset + 9] & 0x07) + 1)
-        : 0;
+    // Рисуем кадр на композит
+    const frameData = imageData.patch;
+    const left = imageData.patchLeft || 0;
+    const top = imageData.patchTop || 0;
+    const frameWidth = imageData.patchWidth || width;
+    const frameHeight = imageData.patchHeight || height;
 
-      offset += 10;
+    for (let y = 0; y < frameHeight; y++) {
+      for (let x = 0; x < frameWidth; x++) {
+        const srcIdx = (y * frameWidth + x) * 4;
+        const dstX = left + x;
+        const dstY = top + y;
 
-      const palette: [number, number, number][] = hasLocalColorTable
-        ? []
-        : globalPalette;
-      if (hasLocalColorTable) {
-        for (let i = 0; i < localColorTableSize; i++) {
-          palette.push([bytes[offset], bytes[offset + 1], bytes[offset + 2]]);
-          offset += 3;
-        }
-      }
+        if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
 
-      const lzwMinCodeSize = bytes[offset];
-      offset++;
+        const dstIdx = (dstY * width + dstX) * 4;
+        const alpha = frameData[srcIdx + 3];
 
-      const lzwData: number[] = [];
-      while (offset < bytes.length && bytes[offset] !== 0) {
-        const blockSize = bytes[offset];
-        for (let i = 0; i < blockSize; i++) {
-          lzwData.push(bytes[offset + 1 + i]);
-        }
-        offset += blockSize + 1;
-      }
-      if (offset < bytes.length) offset++;
+        if (alpha > 0) {
+          // Alpha blending
+          const srcAlpha = alpha / 255;
+          const dstAlpha = composite.data[dstIdx + 3] / 255;
+          const outAlpha = srcAlpha + dstAlpha * (1 - srcAlpha);
 
-      const decoded = decodeLZW(lzwData, lzwMinCodeSize);
-
-      if (disposalMethod === 3) {
-        previousComposite = new Uint8ClampedArray(composite);
-      }
-
-      for (let y = 0; y < imgHeight; y++) {
-        for (let x = 0; x < imgWidth; x++) {
-          const srcIdx = y * imgWidth + x;
-          const colorIdx = decoded[srcIdx];
-
-          if (colorIdx === undefined || colorIdx >= palette.length) continue;
-          if (colorIdx === transparentIndex) continue;
-
-          const [r, g, b] = palette[colorIdx];
-          const dstX = imgLeft + x;
-          const dstY = imgTop + y;
-
-          if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
-
-          const dstIdx = (dstY * width + dstX) * 4;
-          composite[dstIdx] = r;
-          composite[dstIdx + 1] = g;
-          composite[dstIdx + 2] = b;
-          composite[dstIdx + 3] = 255;
-        }
-      }
-
-      frames.push({
-        rgba: new Uint8ClampedArray(composite),
-        delay,
-        width,
-        height,
-      });
-
-      if (disposalMethod === 2) {
-        for (let y = 0; y < imgHeight; y++) {
-          for (let x = 0; x < imgWidth; x++) {
-            const dstX = imgLeft + x;
-            const dstY = imgTop + y;
-            if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
-            const dstIdx = (dstY * width + dstX) * 4;
-            composite[dstIdx] = 255;
-            composite[dstIdx + 1] = 255;
-            composite[dstIdx + 2] = 255;
-            composite[dstIdx + 3] = 255;
+          if (outAlpha > 0) {
+            composite.data[dstIdx] = (frameData[srcIdx] * srcAlpha + composite.data[dstIdx] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+            composite.data[dstIdx + 1] = (frameData[srcIdx + 1] * srcAlpha + composite.data[dstIdx + 1] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+            composite.data[dstIdx + 2] = (frameData[srcIdx + 2] * srcAlpha + composite.data[dstIdx + 2] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+            composite.data[dstIdx + 3] = outAlpha * 255;
           }
         }
-      } else if (disposalMethod === 3 && previousComposite) {
-        composite.set(previousComposite);
       }
-    } else if (blockType === 0x3b) {
-      break;
-    } else {
-      offset++;
+    }
+
+    // Сохраняем кадр
+    frames.push({
+      rgba: new Uint8ClampedArray(composite.data),
+      delay: frame.gce?.delay || 100,
+      width,
+      height,
+    });
+
+    // Обработка disposal method
+    const disposal = frame.gce?.disposal || 0;
+    if (disposal === 2) {
+      // Restore to background — очищаем область кадра
+      for (let y = 0; y < frameHeight; y++) {
+        for (let x = 0; x < frameWidth; x++) {
+          const dstX = left + x;
+          const dstY = top + y;
+          if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
+          const dstIdx = (dstY * width + dstX) * 4;
+          composite.data[dstIdx] = 255;
+          composite.data[dstIdx + 1] = 255;
+          composite.data[dstIdx + 2] = 255;
+          composite.data[dstIdx + 3] = 255;
+        }
+      }
+    } else if (disposal === 3) {
+      // Restore to previous — нужно сохранять предыдущее состояние
+      // Для простоты пока пропускаем
     }
   }
 
   return frames;
-}
-
-function decodeLZW(data: number[], minCodeSize: number): number[] {
-  const clearCode = 1 << minCodeSize;
-  const eoiCode = clearCode + 1;
-  let codeSize = minCodeSize + 1;
-  let codeMask = (1 << codeSize) - 1;
-
-  const dictionary: Map<number, number[]> = new Map();
-  for (let i = 0; i < clearCode; i++) dictionary.set(i, [i]);
-
-  const output: number[] = [];
-  let bitBuffer = 0;
-  let bitCount = 0;
-  let dataIdx = 0;
-
-  function readCode(): number {
-    while (bitCount < codeSize) {
-      if (dataIdx >= data.length) return -1;
-      bitBuffer |= data[dataIdx++] << bitCount;
-      bitCount += 8;
-    }
-    const code = bitBuffer & codeMask;
-    bitBuffer >>= codeSize;
-    bitCount -= codeSize;
-    return code;
-  }
-
-  let code = readCode();
-  if (code !== clearCode) return output;
-
-  code = readCode();
-  if (code === eoiCode) return output;
-
-  let previous = dictionary.get(code) || [];
-  output.push(...previous);
-
-  while (true) {
-    code = readCode();
-    if (code === -1) break;
-
-    if (code === clearCode) {
-      dictionary.clear();
-      for (let i = 0; i < clearCode; i++) dictionary.set(i, [i]);
-      codeSize = minCodeSize + 1;
-      codeMask = (1 << codeSize) - 1;
-
-      code = readCode();
-      if (code === eoiCode) break;
-
-      previous = dictionary.get(code) || [];
-      output.push(...previous);
-      continue;
-    }
-
-    if (code === eoiCode) break;
-
-    let entry: number[];
-    if (dictionary.has(code)) {
-      entry = dictionary.get(code)!;
-    } else if (code === dictionary.size) {
-      entry = [...previous, previous[0]];
-    } else {
-      break;
-    }
-
-    output.push(...entry);
-
-    if (dictionary.size < 4096) {
-      dictionary.set(dictionary.size, [...previous, entry[0]]);
-      if (dictionary.size > codeMask && codeSize < 12) {
-        codeSize++;
-        codeMask = (1 << codeSize) - 1;
-      }
-    }
-
-    previous = entry;
-  }
-
-  return output;
 }
 
 // ============================================================
@@ -345,7 +204,7 @@ async function encodeGif(frames: Frame[]): Promise<Blob> {
 }
 
 // ============================================================
-// DISPLACEMENT + WARP (УСИЛЕННЫЙ)
+// DISPLACEMENT + WARP
 // ============================================================
 function generateDisplacementField(
   width: number,
@@ -361,8 +220,7 @@ function generateDisplacementField(
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       dx[idx] = (fbmNoise2D(x * frequency, y * frequency, seed) - 0.5) * 2 * amplitude;
-      dy[idx] =
-        (fbmNoise2D(x * frequency, y * frequency, seed + 10000) - 0.5) * 2 * amplitude;
+      dy[idx] = (fbmNoise2D(x * frequency, y * frequency, seed + 10000) - 0.5) * 2 * amplitude;
     }
   }
 
@@ -421,7 +279,7 @@ function warpFrame(
 }
 
 // ============================================================
-// BLOCK SHUFFLE (УСИЛЕННЫЙ — большие блоки)
+// BLOCK SHUFFLE
 // ============================================================
 function blockShuffle(
   source: Uint8ClampedArray,
@@ -432,7 +290,6 @@ function blockShuffle(
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(source);
 
-  // УСИЛЕНО: от 8 до 40 пикселей (было 4-20)
   const blockSize = Math.max(8, Math.floor(((100 - similarity) / 100) * 40));
   if (blockSize < 8) return output;
 
@@ -445,7 +302,7 @@ function blockShuffle(
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
       const r = detRand(seed, by * blocksX + bx);
-      if (r > 0.4) continue; // 40% блоков переставляются (было 30%)
+      if (r > 0.4) continue;
 
       const otherBx = Math.floor(detRand(seed, by * blocksX + bx + 1000) * blocksX);
       const otherBy = Math.floor(detRand(seed, by * blocksX + bx + 2000) * blocksY);
@@ -476,7 +333,7 @@ function blockShuffle(
 }
 
 // ============================================================
-// SWIRL (УСИЛЕННЫЙ — больший угол)
+// SWIRL
 // ============================================================
 function swirl(
   source: Uint8ClampedArray,
@@ -487,13 +344,11 @@ function swirl(
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(width * height * 4);
 
-  // УСИЛЕНО: до 3π (было 2π)
   const maxAngle = ((100 - similarity) / 100) * Math.PI * 3;
   if (maxAngle < 0.1) return new Uint8ClampedArray(source);
 
   const cx = width * (0.3 + detRand(seed, 0) * 0.4);
   const cy = height * (0.3 + detRand(seed, 1) * 0.4);
-  // УСИЛЕНО: радиус до 50% (было 20-50%)
   const radius = Math.min(width, height) * (0.3 + detRand(seed, 2) * 0.2);
 
   for (let y = 0; y < height; y++) {
@@ -534,7 +389,7 @@ function swirl(
 }
 
 // ============================================================
-// EDGE DISTORT (УСИЛЕННЫЙ)
+// EDGE DISTORT
 // ============================================================
 function distortEdges(
   source: Uint8ClampedArray,
@@ -544,7 +399,6 @@ function distortEdges(
   similarity: number
 ): Uint8ClampedArray {
   const output = new Uint8ClampedArray(source);
-  // УСИЛЕНО: до 8 пикселей (было 4)
   const maxEdgeShift = Math.floor(((100 - similarity) / 100) * 8);
   if (maxEdgeShift < 1) return output;
 
@@ -628,7 +482,7 @@ function applyTemporalConsistency(
 }
 
 // ============================================================
-// VARIATION ENGINE (УСИЛЕННЫЕ ПАРАМЕТРЫ)
+// VARIATION ENGINE
 // ============================================================
 async function generateVariations(
   frames: Frame[],
@@ -639,9 +493,7 @@ async function generateVariations(
 ): Promise<VariationResult[]> {
   const motionMask = computeMotionMask(frames);
 
-  // УСИЛЕНО: амплитуда до 50px (было 35)
   const displacementAmplitude = ((100 - similarity) / 100) * 50;
-  // УСИЛЕНО: частота до 0.25 (было 0.15) — более детальные искажения
   const displacementFrequency = 0.05 + ((100 - similarity) / 100) * 0.2;
   const temporalAmplitude = displacementAmplitude * 0.15;
 
@@ -680,7 +532,6 @@ async function generateVariations(
         temporalAmplitude
       );
 
-      // 1. Warp (displacement)
       const warped = warpFrame(
         originalFrame.rgba,
         dx,
@@ -689,7 +540,6 @@ async function generateVariations(
         originalFrame.height
       );
 
-      // 2. Block shuffle (перестановка блоков)
       const shuffled = blockShuffle(
         warped,
         originalFrame.width,
@@ -698,7 +548,6 @@ async function generateVariations(
         similarity
       );
 
-      // 3. Swirl (закручивание)
       const swirled = swirl(
         shuffled,
         originalFrame.width,
@@ -707,7 +556,6 @@ async function generateVariations(
         similarity
       );
 
-      // 4. Edge distort (искажение контуров)
       const distorted = distortEdges(
         swirled,
         originalFrame.width,

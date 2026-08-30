@@ -1,13 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { GIFEncoder, quantize, applyPalette } from "gifenc";
-import { parseGIF, decompressFrame } from "gifuct-js";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "GIF Variation Studio" },
-      { name: "description", content: "Upload a GIF and generate multiple visual variations while preserving its identity." },
+      { title: "GIF Collection Studio — Style Profile & Series Generator" },
+      {
+        name: "description",
+        content:
+          "Upload reference GIFs, extract their visual style profile, and generate a whole collection of new looping GIF-art that shares the same character.",
+      },
+      { property: "og:title", content: "GIF Collection Studio" },
+      {
+        property: "og:description",
+        content:
+          "Analyze reference GIFs and generate a coherent series of new GIF-art in one click.",
+      },
     ],
   }),
   component: Studio,
@@ -16,694 +25,687 @@ export const Route = createFileRoute("/")({
 // ============================================================
 // TYPES
 // ============================================================
-interface Frame {
-  rgba: Uint8ClampedArray;
-  delay: number;
-  width: number;
-  height: number;
+interface StyleProfile {
+  palette: string[];
+  motion: number;
+  grain: number;
+  contrast: number;
+  saturation: number;
+  brightness: number;
+  fps: number;
+  frameCount: number;
+  sources: number;
+  aspect: number;
+  thumbs: string[];
+  names: string[];
 }
 
-interface VariationResult {
+interface GifItem {
   id: string;
   url: string;
   bytes: number;
+  system: string;
+  seed: number;
 }
 
-interface DisplacementField {
-  dx: Float32Array;
-  dy: Float32Array;
-}
+type Stage = "idle" | "analyzing" | "ready" | "generating";
 
 // ============================================================
-// NOISE
+// GIF ANALYZER
 // ============================================================
-function hash(n: number): number {
-  n = n | 0;
-  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b) | 0;
-  n = Math.imul(n ^ (n >>> 16), 0x45d9f3b) | 0;
-  n = (n ^ (n >>> 16)) | 0;
-  return 1 - ((n & 0x7fffffff) / 1073741823.5);
-}
+async function analyzeGifs(files: File[]): Promise<StyleProfile> {
+  const allPixels: number[][] = [];
+  let totalMotion = 0;
+  let totalGrain = 0;
+  let totalContrast = 0;
+  let totalSaturation = 0;
+  let totalBrightness = 0;
+  let frameCount = 0;
+  let fps = 12;
+  let aspect = 1;
+  const thumbs: string[] = [];
+  const names: string[] = [];
 
-const NOISE_TABLE_SIZE = 4096;
-const noiseTable = new Float32Array(NOISE_TABLE_SIZE);
-for (let i = 0; i < NOISE_TABLE_SIZE; i++) noiseTable[i] = hash(i);
+  for (const file of files) {
+    names.push(file.name);
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
 
-function noiseAt(n: number): number {
-  return noiseTable[((n % NOISE_TABLE_SIZE) + NOISE_TABLE_SIZE) % NOISE_TABLE_SIZE];
-}
+    // Простой парсер GIF для извлечения кадров
+    const frames = await decodeGifSimple(bytes);
+    if (frames.length === 0) continue;
 
-function perlinNoise2D(x: number, y: number, seed: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const n00 = noiseAt(ix + iy * 57 + seed);
-  const n10 = noiseAt(ix + 1 + iy * 57 + seed);
-  const n01 = noiseAt(ix + (iy + 1) * 57 + seed);
-  const n11 = noiseAt(ix + 1 + (iy + 1) * 57 + seed);
-  const nx0 = n00 + (n10 - n00) * ux;
-  const nx1 = n01 + (n11 - n01) * ux;
-  return nx0 + (nx1 - nx0) * uy;
-}
+    thumbs.push(URL.createObjectURL(new Blob([buffer], { type: "image/gif" })));
+    aspect = frames[0].width / frames[0].height;
+    fps = Math.round(1000 / (frames[0].delay || 100));
 
-function fbmNoise2D(x: number, y: number, seed: number, octaves = 4): number {
-  let value = 0;
-  let amplitude = 0.5;
-  let frequency = 1;
-  for (let i = 0; i < octaves; i++) {
-    value += perlinNoise2D(x * frequency, y * frequency, seed + i * 1000) * amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
+    let prevFrame: Uint8ClampedArray | null = null;
+
+    for (const frame of frames) {
+      frameCount++;
+      const { rgba, width, height } = frame;
+
+      // Собираем пиксели для палитры
+      for (let i = 0; i < rgba.length; i += 4) {
+        if (rgba[i + 3] > 128) {
+          allPixels.push([rgba[i], rgba[i + 1], rgba[i + 2]]);
+        }
+      }
+
+      // Motion: разница между кадрами
+      if (prevFrame) {
+        let diff = 0;
+        for (let i = 0; i < rgba.length; i += 4) {
+          diff += Math.abs(rgba[i] - prevFrame[i]);
+          diff += Math.abs(rgba[i + 1] - prevFrame[i + 1]);
+          diff += Math.abs(rgba[i + 2] - prevFrame[i + 2]);
+        }
+        totalMotion += diff / (width * height * 3);
+      }
+      prevFrame = rgba;
+
+      // Grain: variance соседних пикселей
+      let grainSum = 0;
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const idx = (y * width + x) * 4;
+          const right = (y * width + x + 1) * 4;
+          const below = ((y + 1) * width + x) * 4;
+          const diff =
+            Math.abs(rgba[idx] - rgba[right]) +
+            Math.abs(rgba[idx] - rgba[below]);
+          grainSum += diff;
+        }
+      }
+      totalGrain += grainSum / (width * height);
+
+      // Contrast: min/max brightness
+      let minBright = 255, maxBright = 0;
+      for (let i = 0; i < rgba.length; i += 4) {
+        const bright = (rgba[i] + rgba[i + 1] + rgba[i + 2]) / 3;
+        minBright = Math.min(minBright, bright);
+        maxBright = Math.max(maxBright, bright);
+      }
+      totalContrast += (maxBright - minBright) / 255;
+
+      // Saturation & Brightness
+      let satSum = 0, brightSum = 0;
+      for (let i = 0; i < rgba.length; i += 4) {
+        const r = rgba[i] / 255, g = rgba[i + 1] / 255, b = rgba[i + 2] / 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const l = (max + min) / 2;
+        const s = max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1));
+        satSum += s;
+        brightSum += l;
+      }
+      totalSaturation += satSum / (width * height);
+      totalBrightness += brightSum / (width * height);
+    }
   }
-  return value;
+
+  // Извлекаем доминантные цвета через k-means
+  const palette = extractPalette(allPixels, 6);
+
+  const n = Math.max(1, frameCount);
+  return {
+    palette,
+    motion: Math.min(1, totalMotion / n / 50),
+    grain: Math.min(1, totalGrain / n / 30),
+    contrast: Math.min(1, totalContrast / n),
+    saturation: Math.min(1, totalSaturation / n),
+    brightness: Math.min(1, totalBrightness / n),
+    fps,
+    frameCount,
+    sources: files.length,
+    aspect,
+    thumbs,
+    names,
+  };
 }
 
-function detRand(seed: number, offset: number): number {
-  const x = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
-  return x - Math.floor(x);
-}
+function extractPalette(pixels: number[][], k: number): string[] {
+  if (pixels.length === 0) return ["#ffffff"];
 
-// ============================================================
-// GIF DECODER (используем gifuct-js)
-// ============================================================
-async function decodeGif(file: File): Promise<Frame[]> {
-  const buffer = await file.arrayBuffer();
-  const gif = parseGIF(buffer);
-  const frames: Frame[] = [];
+  // Простой k-means
+  const centroids = pixels
+    .slice(0, k)
+    .map((p) => [...p]);
 
-  let composite: ImageData | null = null;
-  const width = gif.lsd.width;
-  const height = gif.lsd.height;
+  for (let iter = 0; iter < 10; iter++) {
+    const clusters: number[][][] = Array.from({ length: k }, () => []);
 
-  for (const frame of gif.frames) {
-    const imageData = decompressFrame(frame, gif.gct);
-    if (!imageData) continue;
-
-    // Создаем композитный буфер если нужно
-    if (!composite) {
-      composite = new ImageData(width, height);
-      // Заполняем белым фоном
-      for (let i = 0; i < composite.data.length; i += 4) {
-        composite.data[i] = 255;
-        composite.data[i + 1] = 255;
-        composite.data[i + 2] = 255;
-        composite.data[i + 3] = 255;
-      }
-    }
-
-    // Рисуем кадр на композит
-    const frameData = imageData.patch;
-    const left = imageData.patchLeft || 0;
-    const top = imageData.patchTop || 0;
-    const frameWidth = imageData.patchWidth || width;
-    const frameHeight = imageData.patchHeight || height;
-
-    for (let y = 0; y < frameHeight; y++) {
-      for (let x = 0; x < frameWidth; x++) {
-        const srcIdx = (y * frameWidth + x) * 4;
-        const dstX = left + x;
-        const dstY = top + y;
-
-        if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
-
-        const dstIdx = (dstY * width + dstX) * 4;
-        const alpha = frameData[srcIdx + 3];
-
-        if (alpha > 0) {
-          // Alpha blending
-          const srcAlpha = alpha / 255;
-          const dstAlpha = composite.data[dstIdx + 3] / 255;
-          const outAlpha = srcAlpha + dstAlpha * (1 - srcAlpha);
-
-          if (outAlpha > 0) {
-            composite.data[dstIdx] = (frameData[srcIdx] * srcAlpha + composite.data[dstIdx] * dstAlpha * (1 - srcAlpha)) / outAlpha;
-            composite.data[dstIdx + 1] = (frameData[srcIdx + 1] * srcAlpha + composite.data[dstIdx + 1] * dstAlpha * (1 - srcAlpha)) / outAlpha;
-            composite.data[dstIdx + 2] = (frameData[srcIdx + 2] * srcAlpha + composite.data[dstIdx + 2] * dstAlpha * (1 - srcAlpha)) / outAlpha;
-            composite.data[dstIdx + 3] = outAlpha * 255;
-          }
+    for (const pixel of pixels) {
+      let minDist = Infinity;
+      let closest = 0;
+      for (let i = 0; i < k; i++) {
+        const dist =
+          (pixel[0] - centroids[i][0]) ** 2 +
+          (pixel[1] - centroids[i][1]) ** 2 +
+          (pixel[2] - centroids[i][2]) ** 2;
+        if (dist < minDist) {
+          minDist = dist;
+          closest = i;
         }
       }
+      clusters[closest].push(pixel);
     }
 
-    // Сохраняем кадр
-    frames.push({
-      rgba: new Uint8ClampedArray(composite.data),
-      delay: frame.gce?.delay || 100,
-      width,
-      height,
-    });
+    for (let i = 0; i < k; i++) {
+      if (clusters[i].length === 0) continue;
+      const sum = [0, 0, 0];
+      for (const p of clusters[i]) {
+        sum[0] += p[0];
+        sum[1] += p[1];
+        sum[2] += p[2];
+      }
+      centroids[i] = [
+        sum[0] / clusters[i].length,
+        sum[1] / clusters[i].length,
+        sum[2] / clusters[i].length,
+      ];
+    }
+  }
 
-    // Обработка disposal method
-    const disposal = frame.gce?.disposal || 0;
-    if (disposal === 2) {
-      // Restore to background — очищаем область кадра
-      for (let y = 0; y < frameHeight; y++) {
-        for (let x = 0; x < frameWidth; x++) {
-          const dstX = left + x;
-          const dstY = top + y;
+  return centroids.map(
+    (c) => `#${Math.round(c[0]).toString(16).padStart(2, "0")}${Math.round(c[1]).toString(16).padStart(2, "0")}${Math.round(c[2]).toString(16).padStart(2, "0")}`
+  );
+}
+
+// ============================================================
+// GIF DECODER (упрощенный)
+// ============================================================
+async function decodeGifSimple(bytes: Uint8Array): Promise<{ rgba: Uint8ClampedArray; width: number; height: number; delay: number }[]> {
+  const signature = String.fromCharCode(bytes[0], bytes[1], bytes[2]);
+  if (signature !== "GIF") return [];
+
+  const width = bytes[6] | (bytes[7] << 8);
+  const height = bytes[8] | (bytes[9] << 8);
+  const hasGlobalColorTable = (bytes[10] & 0x80) !== 0;
+  const globalColorTableSize = hasGlobalColorTable ? Math.pow(2, (bytes[10] & 0x07) + 1) : 0;
+
+  let offset = 13;
+  const globalPalette: [number, number, number][] = [];
+  if (hasGlobalColorTable) {
+    for (let i = 0; i < globalColorTableSize; i++) {
+      globalPalette.push([bytes[offset], bytes[offset + 1], bytes[offset + 2]]);
+      offset += 3;
+    }
+  }
+
+  const frames: { rgba: Uint8ClampedArray; width: number; height: number; delay: number }[] = [];
+  let delay = 100;
+  const composite = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    composite[i * 4] = 255;
+    composite[i * 4 + 1] = 255;
+    composite[i * 4 + 2] = 255;
+    composite[i * 4 + 3] = 255;
+  }
+
+  while (offset < bytes.length) {
+    const blockType = bytes[offset];
+
+    if (blockType === 0x21) {
+      const extensionLabel = bytes[offset + 1];
+      if (extensionLabel === 0xf9) {
+        delay = (bytes[offset + 4] | (bytes[offset + 5] << 8)) * 10;
+        if (delay === 0) delay = 100;
+      }
+      offset += 2;
+      while (offset < bytes.length && bytes[offset] !== 0) {
+        offset += bytes[offset] + 1;
+      }
+      if (offset < bytes.length) offset++;
+    } else if (blockType === 0x2c) {
+      const imgLeft = bytes[offset + 1] | (bytes[offset + 2] << 8);
+      const imgTop = bytes[offset + 3] | (bytes[offset + 4] << 8);
+      const imgWidth = bytes[offset + 5] | (bytes[offset + 6] << 8);
+      const imgHeight = bytes[offset + 7] | (bytes[offset + 8] << 8);
+      const hasLocalColorTable = (bytes[offset + 9] & 0x80) !== 0;
+      const localColorTableSize = hasLocalColorTable ? Math.pow(2, (bytes[offset + 9] & 0x07) + 1) : 0;
+
+      offset += 10;
+
+      const palette: [number, number, number][] = hasLocalColorTable ? [] : globalPalette;
+      if (hasLocalColorTable) {
+        for (let i = 0; i < localColorTableSize; i++) {
+          palette.push([bytes[offset], bytes[offset + 1], bytes[offset + 2]]);
+          offset += 3;
+        }
+      }
+
+      const lzwMinCodeSize = bytes[offset];
+      offset++;
+
+      const lzwData: number[] = [];
+      while (offset < bytes.length && bytes[offset] !== 0) {
+        const blockSize = bytes[offset];
+        for (let i = 0; i < blockSize; i++) {
+          lzwData.push(bytes[offset + 1 + i]);
+        }
+        offset += blockSize + 1;
+      }
+      if (offset < bytes.length) offset++;
+
+      const decoded = decodeLZW(lzwData, lzwMinCodeSize);
+
+      for (let y = 0; y < imgHeight; y++) {
+        for (let x = 0; x < imgWidth; x++) {
+          const srcIdx = y * imgWidth + x;
+          const colorIdx = decoded[srcIdx];
+          if (colorIdx === undefined || colorIdx >= palette.length) continue;
+
+          const [r, g, b] = palette[colorIdx];
+          const dstX = imgLeft + x;
+          const dstY = imgTop + y;
           if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height) continue;
+
           const dstIdx = (dstY * width + dstX) * 4;
-          composite.data[dstIdx] = 255;
-          composite.data[dstIdx + 1] = 255;
-          composite.data[dstIdx + 2] = 255;
-          composite.data[dstIdx + 3] = 255;
+          composite[dstIdx] = r;
+          composite[dstIdx + 1] = g;
+          composite[dstIdx + 2] = b;
+          composite[dstIdx + 3] = 255;
         }
       }
-    } else if (disposal === 3) {
-      // Restore to previous — нужно сохранять предыдущее состояние
-      // Для простоты пока пропускаем
+
+      frames.push({
+        rgba: new Uint8ClampedArray(composite),
+        width,
+        height,
+        delay,
+      });
+    } else if (blockType === 0x3b) {
+      break;
+    } else {
+      offset++;
     }
   }
 
   return frames;
 }
 
-// ============================================================
-// GIF ENCODER
-// ============================================================
-async function encodeGif(frames: Frame[]): Promise<Blob> {
-  const gif = GIFEncoder();
+function decodeLZW(data: number[], minCodeSize: number): number[] {
+  const clearCode = 1 << minCodeSize;
+  const eoiCode = clearCode + 1;
+  let codeSize = minCodeSize + 1;
+  let codeMask = (1 << codeSize) - 1;
 
-  for (const frame of frames) {
-    const { rgba, width, height, delay } = frame;
-    const palette = quantize(rgba, 256);
-    const index = applyPalette(rgba, palette);
-    gif.writeFrame(index, width, height, { palette, delay });
+  const dictionary: Map<number, number[]> = new Map();
+  for (let i = 0; i < clearCode; i++) dictionary.set(i, [i]);
+
+  const output: number[] = [];
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let dataIdx = 0;
+
+  function readCode(): number {
+    while (bitCount < codeSize) {
+      if (dataIdx >= data.length) return -1;
+      bitBuffer |= data[dataIdx++] << bitCount;
+      bitCount += 8;
+    }
+    const code = bitBuffer & codeMask;
+    bitBuffer >>= codeSize;
+    bitCount -= codeSize;
+    return code;
+  }
+
+  let code = readCode();
+  if (code !== clearCode) return output;
+
+  code = readCode();
+  if (code === eoiCode) return output;
+
+  let previous = dictionary.get(code) || [];
+  output.push(...previous);
+
+  while (true) {
+    code = readCode();
+    if (code === -1) break;
+
+    if (code === clearCode) {
+      dictionary.clear();
+      for (let i = 0; i < clearCode; i++) dictionary.set(i, [i]);
+      codeSize = minCodeSize + 1;
+      codeMask = (1 << codeSize) - 1;
+
+      code = readCode();
+      if (code === eoiCode) break;
+
+      previous = dictionary.get(code) || [];
+      output.push(...previous);
+      continue;
+    }
+
+    if (code === eoiCode) break;
+
+    let entry: number[];
+    if (dictionary.has(code)) {
+      entry = dictionary.get(code)!;
+    } else if (code === dictionary.size) {
+      entry = [...previous, previous[0]];
+    } else {
+      break;
+    }
+
+    output.push(...entry);
+
+    if (dictionary.size < 4096) {
+      dictionary.set(dictionary.size, [...previous, entry[0]]);
+      if (dictionary.size > codeMask && codeSize < 12) {
+        codeSize++;
+        codeMask = (1 << codeSize) - 1;
+      }
+    }
+
+    previous = entry;
+  }
+
+  return output;
+}
+
+// ============================================================
+// GIF GENERATOR
+// ============================================================
+async function generateGif(
+  seed: number,
+  profile: StyleProfile,
+  options: { size: number; frames: number }
+): Promise<GifItem> {
+  const { size, frames } = options;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  const gif = GIFEncoder();
+  const delay = Math.round(1000 / profile.fps);
+
+  // Выбираем систему генерации на основе seed
+  const systems = ["flowField", "particles", "geometric", "noise"];
+  const system = systems[seed % systems.length];
+
+  // Конвертируем палитру в RGB
+  const paletteRGB = profile.palette.map((hex) => {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return [r, g, b];
+  });
+
+  for (let frameIdx = 0; frameIdx < frames; frameIdx++) {
+    const t = frameIdx / frames;
+
+    ctx.fillStyle = profile.palette[0] || "#000000";
+    ctx.fillRect(0, 0, size, size);
+
+    if (system === "flowField") {
+      renderFlowField(ctx, size, t, seed, profile, paletteRGB);
+    } else if (system === "particles") {
+      renderParticles(ctx, size, t, seed, profile, paletteRGB);
+    } else if (system === "geometric") {
+      renderGeometric(ctx, size, t, seed, profile, paletteRGB);
+    } else {
+      renderNoise(ctx, size, t, seed, profile, paletteRGB);
+    }
+
+    const imageData = ctx.getImageData(0, 0, size, size);
+    const palette = quantize(imageData.data, 256);
+    const index = applyPalette(imageData.data, palette);
+    gif.writeFrame(index, size, size, { palette, delay });
   }
 
   gif.finish();
-
   const bytes = gif.bytesView();
   const buf = new Uint8Array(bytes.byteLength);
   buf.set(bytes);
+  const blob = new Blob([buf], { type: "image/gif" });
 
-  return new Blob([buf], { type: "image/gif" });
+  return {
+    id: `${seed}`,
+    url: URL.createObjectURL(blob),
+    bytes: blob.size,
+    system,
+    seed,
+  };
 }
 
-// ============================================================
-// DISPLACEMENT + WARP
-// ============================================================
-function generateDisplacementField(
-  width: number,
-  height: number,
+function renderFlowField(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  t: number,
   seed: number,
-  amplitude: number,
-  frequency: number
-): DisplacementField {
-  const dx = new Float32Array(width * height);
-  const dy = new Float32Array(width * height);
+  profile: StyleProfile,
+  palette: number[][]
+) {
+  const gridSize = Math.max(4, Math.floor(8 + profile.motion * 12));
+  const cols = Math.ceil(size / gridSize);
+  const rows = Math.ceil(size / gridSize);
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      dx[idx] = (fbmNoise2D(x * frequency, y * frequency, seed) - 0.5) * 2 * amplitude;
-      dy[idx] = (fbmNoise2D(x * frequency, y * frequency, seed + 10000) - 0.5) * 2 * amplitude;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const angle = noise(x * 0.1 + seed, y * 0.1 + seed, t * 2) * Math.PI * 2;
+      const length = 2 + noise(x * 0.2 + seed + 100, y * 0.2 + seed + 100, t * 3) * gridSize * profile.motion;
+
+      const px = x * gridSize;
+      const py = y * gridSize;
+      const ex = px + Math.cos(angle) * length;
+      const ey = py + Math.sin(angle) * length;
+
+      const colorIdx = Math.floor(noise(x * 0.3 + seed, y * 0.3 + seed, t) * palette.length) % palette.length;
+      const [r, g, b] = palette[colorIdx];
+
+      ctx.strokeStyle = `rgba(${r},${g},${b},${0.3 + profile.contrast * 0.5})`;
+      ctx.lineWidth = 1 + profile.grain * 2;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
     }
   }
-
-  return { dx, dy };
 }
 
-function warpFrame(
-  source: Uint8ClampedArray,
-  dx: Float32Array,
-  dy: Float32Array,
-  width: number,
-  height: number
-): Uint8ClampedArray {
-  const output = new Uint8ClampedArray(width * height * 4);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const srcX = x + dx[idx];
-      const srcY = y + dy[idx];
-
-      const x0 = Math.floor(srcX);
-      const y0 = Math.floor(srcY);
-      const x1 = x0 + 1;
-      const y1 = y0 + 1;
-
-      const fx = srcX - x0;
-      const fy = srcY - y0;
-
-      const cx0 = Math.max(0, Math.min(width - 1, x0));
-      const cy0 = Math.max(0, Math.min(height - 1, y0));
-      const cx1 = Math.max(0, Math.min(width - 1, x1));
-      const cy1 = Math.max(0, Math.min(height - 1, y1));
-
-      const idx00 = (cy0 * width + cx0) * 4;
-      const idx10 = (cy0 * width + cx1) * 4;
-      const idx01 = (cy1 * width + cx0) * 4;
-      const idx11 = (cy1 * width + cx1) * 4;
-
-      const dstIdx = idx * 4;
-
-      for (let c = 0; c < 4; c++) {
-        const v00 = source[idx00 + c];
-        const v10 = source[idx10 + c];
-        const v01 = source[idx01 + c];
-        const v11 = source[idx11 + c];
-
-        const v0 = v00 + (v10 - v00) * fx;
-        const v1 = v01 + (v11 - v01) * fx;
-        output[dstIdx + c] = Math.round(v0 + (v1 - v0) * fy);
-      }
-    }
-  }
-
-  return output;
-}
-
-// ============================================================
-// BLOCK SHUFFLE
-// ============================================================
-function blockShuffle(
-  source: Uint8ClampedArray,
-  width: number,
-  height: number,
+function renderParticles(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  t: number,
   seed: number,
-  similarity: number
-): Uint8ClampedArray {
-  const output = new Uint8ClampedArray(source);
-
-  const blockSize = Math.max(8, Math.floor(((100 - similarity) / 100) * 40));
-  if (blockSize < 8) return output;
-
-  const blocksX = Math.floor(width / blockSize);
-  const blocksY = Math.floor(height / blockSize);
-  const totalBlocks = blocksX * blocksY;
-
-  if (totalBlocks < 4) return output;
-
-  for (let by = 0; by < blocksY; by++) {
-    for (let bx = 0; bx < blocksX; bx++) {
-      const r = detRand(seed, by * blocksX + bx);
-      if (r > 0.4) continue;
-
-      const otherBx = Math.floor(detRand(seed, by * blocksX + bx + 1000) * blocksX);
-      const otherBy = Math.floor(detRand(seed, by * blocksX + bx + 2000) * blocksY);
-
-      for (let dy = 0; dy < blockSize; dy++) {
-        for (let dx = 0; dx < blockSize; dx++) {
-          const x1 = bx * blockSize + dx;
-          const y1 = by * blockSize + dy;
-          const x2 = otherBx * blockSize + dx;
-          const y2 = otherBy * blockSize + dy;
-
-          if (x1 >= width || y1 >= height || x2 >= width || y2 >= height) continue;
-
-          const idx1 = (y1 * width + x1) * 4;
-          const idx2 = (y2 * width + x2) * 4;
-
-          for (let c = 0; c < 4; c++) {
-            const temp = output[idx1 + c];
-            output[idx1 + c] = output[idx2 + c];
-            output[idx2 + c] = temp;
-          }
-        }
-      }
-    }
-  }
-
-  return output;
-}
-
-// ============================================================
-// SWIRL
-// ============================================================
-function swirl(
-  source: Uint8ClampedArray,
-  width: number,
-  height: number,
-  seed: number,
-  similarity: number
-): Uint8ClampedArray {
-  const output = new Uint8ClampedArray(width * height * 4);
-
-  const maxAngle = ((100 - similarity) / 100) * Math.PI * 3;
-  if (maxAngle < 0.1) return new Uint8ClampedArray(source);
-
-  const cx = width * (0.3 + detRand(seed, 0) * 0.4);
-  const cy = height * (0.3 + detRand(seed, 1) * 0.4);
-  const radius = Math.min(width, height) * (0.3 + detRand(seed, 2) * 0.2);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      if (dist > radius) {
-        const idx = (y * width + x) * 4;
-        output[idx] = source[idx];
-        output[idx + 1] = source[idx + 1];
-        output[idx + 2] = source[idx + 2];
-        output[idx + 3] = source[idx + 3];
-      } else {
-        const angle = (1 - dist / radius) * maxAngle;
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
-
-        const srcX = Math.round(cx + dx * cos - dy * sin);
-        const srcY = Math.round(cy + dx * sin + dy * cos);
-
-        const clampedX = Math.max(0, Math.min(width - 1, srcX));
-        const clampedY = Math.max(0, Math.min(height - 1, srcY));
-
-        const srcIdx = (clampedY * width + clampedX) * 4;
-        const dstIdx = (y * width + x) * 4;
-
-        output[dstIdx] = source[srcIdx];
-        output[dstIdx + 1] = source[srcIdx + 1];
-        output[dstIdx + 2] = source[srcIdx + 2];
-        output[dstIdx + 3] = source[srcIdx + 3];
-      }
-    }
-  }
-
-  return output;
-}
-
-// ============================================================
-// EDGE DISTORT
-// ============================================================
-function distortEdges(
-  source: Uint8ClampedArray,
-  width: number,
-  height: number,
-  seed: number,
-  similarity: number
-): Uint8ClampedArray {
-  const output = new Uint8ClampedArray(source);
-  const maxEdgeShift = Math.floor(((100 - similarity) / 100) * 8);
-  if (maxEdgeShift < 1) return output;
-
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const idx = (y * width + x) * 4;
-      const right = (y * width + x + 1) * 4;
-      const below = ((y + 1) * width + x) * 4;
-
-      const diffR =
-        Math.abs(source[idx] - source[right]) +
-        Math.abs(source[idx + 1] - source[right + 1]) +
-        Math.abs(source[idx + 2] - source[right + 2]);
-      const diffB =
-        Math.abs(source[idx] - source[below]) +
-        Math.abs(source[idx + 1] - source[below + 1]) +
-        Math.abs(source[idx + 2] - source[below + 2]);
-
-      if (diffR > 60 || diffB > 60) {
-        const dx = Math.floor((detRand(seed, idx + 100) - 0.5) * 2 * maxEdgeShift);
-        const dy = Math.floor((detRand(seed, idx + 200) - 0.5) * 2 * maxEdgeShift);
-        const srcIdx = ((y + dy) * width + (x + dx)) * 4;
-
-        output[idx] = source[srcIdx];
-        output[idx + 1] = source[srcIdx + 1];
-        output[idx + 2] = source[srcIdx + 2];
-      }
-    }
-  }
-
-  return output;
-}
-
-// ============================================================
-// TEMPORAL CONSISTENCY
-// ============================================================
-function computeMotionMask(frames: Frame[]): Uint8Array {
-  if (frames.length < 2) {
-    return new Uint8Array(frames[0].width * frames[0].height);
-  }
-
-  const width = frames[0].width;
-  const height = frames[0].height;
-  const mask = new Uint8Array(width * height);
-  const threshold = 30;
-
-  const frame1 = frames[0].rgba;
-  const frame2 = frames[1].rgba;
-
-  for (let i = 0; i < width * height; i++) {
-    const idx = i * 4;
-    const diff =
-      Math.abs(frame1[idx] - frame2[idx]) +
-      Math.abs(frame1[idx + 1] - frame2[idx + 1]) +
-      Math.abs(frame1[idx + 2] - frame2[idx + 2]);
-
-    mask[i] = diff > threshold ? 1 : 0;
-  }
-
-  return mask;
-}
-
-function applyTemporalConsistency(
-  displacement: Float32Array,
-  motionMask: Uint8Array,
-  frameIndex: number,
-  totalFrames: number,
-  temporalAmplitude: number
-): Float32Array {
-  const result = new Float32Array(displacement.length);
-  const temporalPhase = (frameIndex / totalFrames) * Math.PI * 2;
-  const temporalFactor = Math.sin(temporalPhase) * temporalAmplitude;
-
-  for (let i = 0; i < displacement.length; i++) {
-    const motion = motionMask[i];
-    const motionReduction = motion * 0.15;
-    result[i] = displacement[i] * (1 - motionReduction) + temporalFactor;
-  }
-
-  return result;
-}
-
-// ============================================================
-// VARIATION ENGINE
-// ============================================================
-async function generateVariations(
-  frames: Frame[],
-  similarity: number,
-  count: number,
-  onProgress?: (progress: number) => void,
-  onCancel?: () => boolean
-): Promise<VariationResult[]> {
-  const motionMask = computeMotionMask(frames);
-
-  const displacementAmplitude = ((100 - similarity) / 100) * 50;
-  const displacementFrequency = 0.05 + ((100 - similarity) / 100) * 0.2;
-  const temporalAmplitude = displacementAmplitude * 0.15;
-
-  const results: VariationResult[] = [];
+  profile: StyleProfile,
+  palette: number[][]
+) {
+  const count = Math.floor(50 + profile.motion * 200);
 
   for (let i = 0; i < count; i++) {
-    if (onCancel && onCancel()) break;
+    const x = noise(i * 0.1 + seed, t * 2, 0) * size;
+    const y = noise(i * 0.1 + seed + 100, t * 2, 0) * size;
+    const radius = 2 + noise(i * 0.2 + seed, t * 3, 0) * 8 * profile.grain;
 
-    const seed = Math.floor(Math.random() * 1e9);
-    const variationFrames: Frame[] = [];
+    const colorIdx = Math.floor(noise(i * 0.3 + seed, t, 0) * palette.length) % palette.length;
+    const [r, g, b] = palette[colorIdx];
 
-    const baseField = generateDisplacementField(
-      frames[0].width,
-      frames[0].height,
-      seed,
-      displacementAmplitude,
-      displacementFrequency
-    );
-
-    for (let frameIdx = 0; frameIdx < frames.length; frameIdx++) {
-      const originalFrame = frames[frameIdx];
-
-      const dx = applyTemporalConsistency(
-        baseField.dx,
-        motionMask,
-        frameIdx,
-        frames.length,
-        temporalAmplitude
-      );
-
-      const dy = applyTemporalConsistency(
-        baseField.dy,
-        motionMask,
-        frameIdx,
-        frames.length,
-        temporalAmplitude
-      );
-
-      const warped = warpFrame(
-        originalFrame.rgba,
-        dx,
-        dy,
-        originalFrame.width,
-        originalFrame.height
-      );
-
-      const shuffled = blockShuffle(
-        warped,
-        originalFrame.width,
-        originalFrame.height,
-        seed,
-        similarity
-      );
-
-      const swirled = swirl(
-        shuffled,
-        originalFrame.width,
-        originalFrame.height,
-        seed + 5000,
-        similarity
-      );
-
-      const distorted = distortEdges(
-        swirled,
-        originalFrame.width,
-        originalFrame.height,
-        seed + 10000,
-        similarity
-      );
-
-      variationFrames.push({
-        rgba: new Uint8ClampedArray(distorted),
-        delay: originalFrame.delay,
-        width: originalFrame.width,
-        height: originalFrame.height,
-      });
-    }
-
-    const blob = await encodeGif(variationFrames);
-
-    results.push({
-      id: `variation_${String(i + 1).padStart(2, "0")}`,
-      url: URL.createObjectURL(blob),
-      bytes: blob.size,
-    });
-
-    if (onProgress) onProgress((i + 1) / count);
-
-    await new Promise((r) => setTimeout(r, 0));
+    ctx.fillStyle = `rgba(${r},${g},${b},${0.5 + profile.saturation * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
   }
+}
 
-  return results;
+function renderGeometric(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  t: number,
+  seed: number,
+  profile: StyleProfile,
+  palette: number[][]
+) {
+  const shapes = Math.floor(5 + profile.contrast * 15);
+
+  for (let i = 0; i < shapes; i++) {
+    const x = noise(i * 0.5 + seed, t, 0) * size;
+    const y = noise(i * 0.5 + seed + 50, t, 0) * size;
+    const radius = 10 + noise(i * 0.3 + seed, t * 2, 0) * 40 * profile.motion;
+    const rotation = noise(i * 0.2 + seed, t * 3, 0) * Math.PI * 2;
+
+    const colorIdx = Math.floor(noise(i * 0.4 + seed, t, 0) * palette.length) % palette.length;
+    const [r, g, b] = palette[colorIdx];
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.fillStyle = `rgba(${r},${g},${b},${0.4 + profile.brightness * 0.4})`;
+
+    const sides = 3 + Math.floor(noise(i + seed, t, 0) * 5);
+    ctx.beginPath();
+    for (let s = 0; s < sides; s++) {
+      const angle = (s / sides) * Math.PI * 2;
+      const px = Math.cos(angle) * radius;
+      const py = Math.sin(angle) * radius;
+      if (s === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function renderNoise(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  t: number,
+  seed: number,
+  profile: StyleProfile,
+  palette: number[][]
+) {
+  const gridSize = Math.max(2, Math.floor(4 + profile.grain * 8));
+  const cols = Math.ceil(size / gridSize);
+  const rows = Math.ceil(size / gridSize);
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const n = noise(x * 0.15 + seed, y * 0.15 + seed, t * 2);
+      const colorIdx = Math.floor(n * palette.length) % palette.length;
+      const [r, g, b] = palette[colorIdx];
+
+      ctx.fillStyle = `rgba(${r},${g},${b},${0.3 + profile.contrast * 0.6})`;
+      ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+    }
+  }
+}
+
+// Simple Perlin-like noise
+function noise(x: number, y: number, z: number): number {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + z * 45.164) * 43758.5453;
+  return n - Math.floor(n);
 }
 
 // ============================================================
 // UI
 // ============================================================
-type Stage = "idle" | "decoding" | "ready" | "generating";
+function Meter({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] tracking-widest text-white/70 uppercase">{label}</span>
+        <span className="font-mono text-xs text-white">{Math.round(value * 100)}</span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full rounded-full bg-cyan-500 transition-all duration-700"
+          style={{ width: `${Math.max(3, Math.min(100, value * 100))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function Studio() {
-  const [file, setFile] = useState<File | null>(null);
-  const [frames, setFrames] = useState<Frame[] | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [profile, setProfile] = useState<StyleProfile | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState(0);
-  const [variations, setVariations] = useState<VariationResult[]>([]);
+  const [items, setItems] = useState<GifItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [similarity, setSimilarity] = useState(75);
-  const [count, setCount] = useState(10);
+  const [count, setCount] = useState(50);
+  const [size, setSize] = useState(256);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
 
   const pick = useCallback((list: FileList | null) => {
     if (!list) return;
-    const gif = Array.from(list).find(
+    const gifs = Array.from(list).filter(
       (f) => f.type === "image/gif" || f.name.toLowerCase().endsWith(".gif")
     );
-    if (!gif) {
-      setError("Please select a .gif file");
+    if (!gifs.length) {
+      setError("Add at least one .gif file");
       return;
     }
     setError(null);
-    setFile(gif);
-    setFrames(null);
+    setFiles(gifs.slice(0, 8));
+    setProfile(null);
     setStage("idle");
   }, []);
 
-  async function decode() {
-    if (!file) return;
-    setStage("decoding");
+  async function analyze() {
+    if (!files.length) return;
+    setStage("analyzing");
     setError(null);
     try {
-      const decodedFrames = await decodeGif(file);
-      if (decodedFrames.length === 0) {
-        throw new Error("No frames decoded — the GIF may be corrupted");
-      }
-      setFrames(decodedFrames);
+      const p = await analyzeGifs(files);
+      setProfile(p);
       setStage("ready");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not decode this GIF");
+      setError(e instanceof Error ? e.message : "Could not read these GIFs");
       setStage("idle");
     }
   }
 
   async function generate() {
-    if (!frames) return;
+    if (!profile) return;
     cancelRef.current = false;
     setStage("generating");
     setProgress(0);
-    variations.forEach((v) => URL.revokeObjectURL(v.url));
-    setVariations([]);
+    items.forEach((i) => URL.revokeObjectURL(i.url));
+    setItems([]);
 
-    try {
-      const results = await generateVariations(
-        frames,
-        similarity,
-        count,
-        (progress) => {
-          if (cancelRef.current) throw new Error("Cancelled");
-          setProgress(progress);
-        },
-        () => cancelRef.current
-      );
-      setVariations(results);
-      setStage("ready");
-    } catch (e) {
-      if (e instanceof Error && e.message === "Cancelled") {
-        setStage("ready");
-      } else {
-        setError(e instanceof Error ? e.message : "Generation failed");
-        setStage("ready");
-      }
+    const base = Math.floor(Math.random() * 1e9);
+    const frames = Math.max(12, Math.min(24, profile.frameCount || 16));
+    const made: GifItem[] = [];
+
+    for (let i = 0; i < count; i++) {
+      if (cancelRef.current) break;
+      const item = await generateGif(base + i * 2654435761, profile, { size, frames });
+      made.push(item);
+      setItems([...made]);
+      setProgress((i + 1) / count);
     }
+
+    setStage("ready");
   }
 
   async function downloadAll() {
-    for (const variation of variations) {
+    for (const item of items) {
       const a = document.createElement("a");
-      a.href = variation.url;
-      a.download = `${variation.id}.gif`;
+      a.href = item.url;
+      a.download = `collection-${item.system}-${item.seed}.gif`;
       a.click();
       await new Promise((r) => setTimeout(r, 120));
     }
   }
 
-  const busy = stage === "decoding" || stage === "generating";
-
-  const similarityLabel =
-    similarity === 100
-      ? "Minimal changes"
-      : similarity >= 90
-      ? "Very close variation"
-      : similarity >= 75
-      ? "Noticeable variation"
-      : similarity >= 50
-      ? "Moderate variation"
-      : "Free variation";
+  const busy = stage === "analyzing" || stage === "generating";
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-10 md:py-16 bg-[#05060c] text-white min-h-screen">
       <header className="mb-10">
         <p className="text-[11px] tracking-widest text-white/70 uppercase">
-          GIF Variation Studio
+          Generative series lab
         </p>
-        <h1 className="mt-2 text-4xl font-bold md:text-5xl">
-          Create Visual Variations
-        </h1>
+        <h1 className="mt-2 text-4xl font-bold md:text-5xl">GIF Collection Studio</h1>
         <p className="mt-3 max-w-2xl text-white/60">
-          Upload a GIF and generate multiple variations that preserve its visual
-          identity while changing its shape. Colors stay the same — only form
-          transforms.
+          Drop in reference GIFs, extract their style profile — palette, motion energy, grain,
+          contrast — then generate a whole series of new looping GIF-art that reads as one
+          collection.
         </p>
       </header>
 
@@ -721,20 +723,21 @@ function Studio() {
               ref={inputRef}
               type="file"
               accept="image/gif"
+              multiple
               className="hidden"
               onChange={(e) => pick(e.target.files)}
             />
-            <p className="text-lg">Drop a GIF here</p>
-            <p className="text-sm text-white/60">one file · processed locally</p>
+            <p className="text-lg">Drop reference GIFs here</p>
+            <p className="text-sm text-white/60">up to 8 files · they never leave your browser</p>
             <button
               onClick={() => inputRef.current?.click()}
               className="mt-2 rounded-md border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15 transition"
             >
-              Choose file
+              Choose files
             </button>
-            {file && (
+            {files.length > 0 && (
               <p className="text-[11px] tracking-widest mt-2 text-white/70">
-                {file.name}
+                {files.length} file{files.length > 1 ? "s" : ""} selected
               </p>
             )}
           </div>
@@ -747,18 +750,18 @@ function Studio() {
 
           <div className="flex flex-wrap items-center gap-3">
             <button
-              disabled={!file || busy}
-              onClick={decode}
+              disabled={!files.length || busy}
+              onClick={analyze}
               className="rounded-md bg-white/10 px-5 py-2.5 text-sm font-semibold hover:bg-white/15 disabled:opacity-40 transition"
             >
-              {stage === "decoding" ? "Decoding…" : "Decode GIF"}
+              {stage === "analyzing" ? "Analyzing…" : "Analyze"}
             </button>
             <button
-              disabled={!frames || busy}
+              disabled={!profile || busy}
               onClick={generate}
               className="rounded-md bg-cyan-500/20 border border-cyan-500/50 px-5 py-2.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/30 disabled:opacity-40 transition"
             >
-              Generate {count} Variations
+              Generate {count}
             </button>
             {stage === "generating" && (
               <button
@@ -768,7 +771,7 @@ function Studio() {
                 Stop
               </button>
             )}
-            {variations.length > 0 && stage !== "generating" && (
+            {items.length > 0 && stage !== "generating" && (
               <button
                 onClick={downloadAll}
                 className="rounded-md border border-white/10 px-4 py-2.5 text-sm hover:bg-white/5 transition"
@@ -787,31 +790,31 @@ function Studio() {
             </div>
           )}
 
-          {variations.length > 0 && (
+          {items.length > 0 && (
             <div>
               <p className="text-[11px] tracking-widest mb-3 text-white/70 uppercase">
-                Variations · {variations.length} files
+                Collection · {items.length} pieces
               </p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-                {variations.map((variation) => (
+                {items.map((item) => (
                   <a
-                    key={variation.id}
-                    href={variation.url}
-                    download={`${variation.id}.gif`}
+                    key={item.id}
+                    href={item.url}
+                    download={`collection-${item.system}-${item.seed}.gif`}
                     className="group overflow-hidden rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.05] transition"
                   >
                     <img
-                      src={variation.url}
-                      alt={`Variation ${variation.id}`}
+                      src={item.url}
+                      alt={`Generated ${item.system} GIF art, seed ${item.seed}`}
                       className="aspect-square w-full object-cover"
                       loading="lazy"
                     />
                     <div className="flex items-center justify-between px-2 py-1.5">
                       <span className="text-[11px] tracking-widest text-white/80">
-                        {variation.id}
+                        {item.system}
                       </span>
                       <span className="text-[10px] text-white/60">
-                        {Math.round(variation.bytes / 1024)}kb
+                        {Math.round(item.bytes / 1024)}kb
                       </span>
                     </div>
                   </a>
@@ -822,76 +825,89 @@ function Studio() {
         </section>
 
         <aside className="space-y-5 p-5 rounded-lg border border-white/10 bg-white/[0.02] h-fit">
-          <h2 className="text-lg font-semibold">Settings</h2>
+          <h2 className="text-lg font-semibold">Style Profile</h2>
 
-          {frames && (
-            <div className="space-y-2">
-              <p className="text-[11px] tracking-widest text-white/70 uppercase">
-                Source GIF
-              </p>
-              <dl className="grid grid-cols-2 gap-2 text-xs text-white/60">
-                <div>frames · {frames.length}</div>
-                <div>
-                  size · {frames[0].width}×{frames[0].height}
-                </div>
-                <div>
-                  duration ·{" "}
-                  {(
-                    frames.reduce((sum, f) => sum + f.delay, 0) / 1000
-                  ).toFixed(1)}
-                  s
-                </div>
-                <div>fps · {Math.round(1000 / frames[0].delay)}</div>
-              </dl>
-            </div>
+          {!profile && (
+            <p className="text-sm text-white/60">
+              Analyze your references to see the profile.
+            </p>
           )}
 
-          <div className="space-y-4 border-t border-white/10 pt-4">
+          {profile && (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {profile.thumbs.map((t, i) => (
+                  <img
+                    key={i}
+                    src={t}
+                    alt={`Reference ${profile.names[i] ?? i + 1}`}
+                    className="h-12 w-12 rounded-md border border-white/10 object-cover"
+                  />
+                ))}
+              </div>
+
+              <div>
+                <p className="text-[11px] tracking-widest mb-2 text-white/70 uppercase">
+                  Palette
+                </p>
+                <div className="flex overflow-hidden rounded-md border border-white/10">
+                  {profile.palette.map((c) => (
+                    <div
+                      key={c}
+                      className="h-9 flex-1"
+                      style={{ backgroundColor: c }}
+                      title={c}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Meter label="Motion" value={profile.motion} />
+                <Meter label="Grain" value={profile.grain} />
+                <Meter label="Contrast" value={profile.contrast} />
+                <Meter label="Saturation" value={profile.saturation} />
+                <Meter label="Brightness" value={profile.brightness} />
+              </div>
+
+              <dl className="grid grid-cols-2 gap-2 font-mono text-xs text-white/60">
+                <div>fps · {profile.fps}</div>
+                <div>frames · {profile.frameCount}</div>
+                <div>sources · {profile.sources}</div>
+                <div>aspect · {profile.aspect.toFixed(2)}</div>
+              </dl>
+            </>
+          )}
+
+          <div className="space-y-3 border-t border-white/10 pt-4">
             <label className="block">
               <span className="text-[11px] tracking-widest text-white/70 uppercase">
-                Similarity · {similarity}%
+                Collection size · {count}
               </span>
               <input
                 type="range"
-                min={0}
+                min={5}
                 max={100}
                 step={5}
-                value={similarity}
-                onChange={(e) => setSimilarity(Number(e.target.value))}
-                className="mt-2 w-full accent-cyan-500"
-              />
-              <p className="mt-1 text-xs text-white/60">{similarityLabel}</p>
-            </label>
-
-            <label className="block">
-              <span className="text-[11px] tracking-widest text-white/70 uppercase">
-                Number of variations · {count}
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={100}
-                step={1}
                 value={count}
                 onChange={(e) => setCount(Number(e.target.value))}
                 className="mt-2 w-full accent-cyan-500"
               />
             </label>
-          </div>
-
-          <div className="border-t border-white/10 pt-4">
-            <p className="text-[11px] tracking-widest mb-2 text-white/70 uppercase">
-              How it works
-            </p>
-            <ul className="space-y-1 text-xs text-white/60">
-              <li>• Displacement fields (Perlin noise)</li>
-              <li>• Bilinear interpolation warping</li>
-              <li>• Block shuffle (shape change)</li>
-              <li>• Swirl distortion (shape change)</li>
-              <li>• Edge distortion (contour change)</li>
-              <li>• Temporal consistency (no flicker)</li>
-              <li>• Colors preserved from original</li>
-            </ul>
+            <label className="block">
+              <span className="text-[11px] tracking-widest text-white/70 uppercase">
+                Resolution · {size}px
+              </span>
+              <input
+                type="range"
+                min={128}
+                max={384}
+                step={32}
+                value={size}
+                onChange={(e) => setSize(Number(e.target.value))}
+                className="mt-2 w-full accent-cyan-500"
+              />
+            </label>
           </div>
         </aside>
       </div>

@@ -36,3 +36,30 @@ export interface MotionMask {
   width: number;
   height: number;
 }
+
+/**
+ * GIF parsing types
+ */
+export interface GifDescriptor {
+  width: number;
+  height: number;
+  globalColorTable?: number[][];
+  backgroundColorIndex?: number;
+  pixelAspectRatio?: number;
+}
+
+export interface GifFrame {
+  imageData: ImageData;
+  delay: number;
+  disposalType?: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface ParsedGif {
+  descriptor: GifDescriptor;
+  frames: GifFrame[];
+  totalDelay: number;
+}

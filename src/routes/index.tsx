@@ -38,7 +38,12 @@ function GifVariationStudio() {
   } | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
   const [similarity, setSimilarity] = useState(75);
+  const [geometry, setGeometry] = useState(65);
+  const [color, setColor] = useState(55);
+  const [flow, setFlow] = useState(60);
+  const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
+
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VariationResult[]>([]);
   const [error, setError] = useState<string | null>(null);

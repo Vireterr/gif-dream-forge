@@ -29,7 +29,7 @@ export async function generateVariations(
   const blockSize = config.blockSize ?? 8;
   const reassemblyMode = config.reassemblyMode ?? 'scatter';
   const colorSegStrength = config.colorSegmentation ?? 0;
-  const colorThreshold = config.colorThreshold ?? 40;
+  const numColors = config.numColors ?? 12;
 
   const originalFrames = await decodeGif(file);
 

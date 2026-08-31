@@ -1,142 +1,16 @@
 /**
- * Advanced reassembly: splits image into irregular blocks (not uniform cubes),
- * then moves each block as a solid unit in any direction.
- * 
- * Two modes:
- * - "irregular-blocks": rectangular blocks of varying sizes (like tetris pieces)
- * - "connected-regions": connected pixel regions (similar to color segmentation)
+ * Reassembly: splits image into blocks and moves each block as a solid unit.
+ * Blocks are blockSize × blockSize rectangles that move together — no internal
+ * shattering. Background is filled from original where blocks moved away.
  */
 
 import type { Frame, ReassemblyMap } from './types';
 import { mulberry32 } from '../utils/noise';
 
-export type ReassemblyMode = 'irregular-blocks' | 'connected-regions';
+export type ReassemblyMode = 'scatter' | 'flow' | 'swap' | 'vortex';
 
 /**
- * Generate irregular rectangular blocks of varying sizes
- */
-function generateIrregularBlocks(
-  width: number,
-  height: number,
-  seed: number,
-  minBlockSize: number = 8,
-  maxBlockSize: number = 32
-): Array<{ x: number; y: number; w: number; h: number }> {
-  const rand = mulberry32((seed ^ 0xdeadbeef) >>> 0);
-  const blocks: Array<{ x: number; y: number; w: number; h: number }> = [];
-  
-  // Simple grid-based approach with variable block sizes
-  let y = 0;
-  while (y < height) {
-    let x = 0;
-    const rowHeight = Math.floor(minBlockSize + rand() * (maxBlockSize - minBlockSize));
-    const actualRowHeight = Math.min(rowHeight, height - y);
-    
-    while (x < width) {
-      const blockWidth = Math.floor(minBlockSize + rand() * (maxBlockSize - minBlockSize));
-      const actualWidth = Math.min(blockWidth, width - x);
-      
-      blocks.push({
-        x,
-        y,
-        w: actualWidth,
-        h: actualRowHeight
-      });
-      
-      x += actualWidth;
-    }
-    
-    y += actualRowHeight;
-  }
-  
-  return blocks;
-}
-
-/**
- * Segment frame into connected regions using flood-fill
- */
-function segmentIntoRegions(
-  rgba: Uint8ClampedArray,
-  width: number,
-  height: number,
-  threshold: number = 40
-): Array<{ pixels: number[]; centerX: number; centerY: number }> {
-  const total = width * height;
-  const visited = new Uint8Array(total);
-  const regions: Array<{ pixels: number[]; centerX: number; centerY: number }> = [];
-  const t2 = threshold * threshold;
-
-  for (let startY = 0; startY < height; startY++) {
-    for (let startX = 0; startX < width; startX++) {
-      const startIdx = startY * width + startX;
-      if (visited[startIdx]) continue;
-
-      const si = startIdx * 4;
-      const sr = rgba[si];
-      const sg = rgba[si + 1];
-      const sb = rgba[si + 2];
-      const sa = rgba[si + 3];
-
-      if (sa < 10) {
-        visited[startIdx] = 1;
-        continue;
-      }
-
-      const pixels: number[] = [];
-      let sumX = 0, sumY = 0;
-      const stack: number[] = [startIdx];
-
-      while (stack.length > 0) {
-        const idx = stack.pop()!;
-        if (visited[idx]) continue;
-
-        const pi = idx * 4;
-        const pr = rgba[pi];
-        const pg = rgba[pi + 1];
-        const pb = rgba[pi + 2];
-        const pa = rgba[pi + 3];
-
-        if (pa < 10) {
-          visited[idx] = 1;
-          continue;
-        }
-
-        const dr = pr - sr;
-        const dg = pg - sg;
-        const db = pb - sb;
-        if (dr * dr + dg * dg + db * db > t2) continue;
-
-        visited[idx] = 1;
-        pixels.push(idx);
-        const px = idx % width;
-        const py = (idx - px) / width;
-        sumX += px;
-        sumY += py;
-
-        const x = idx % width;
-        const y = (idx - x) / width;
-        if (x > 0) stack.push(idx - 1);
-        if (x < width - 1) stack.push(idx + 1);
-        if (y > 0) stack.push(idx - width);
-        if (y < height - 1) stack.push(idx + width);
-      }
-
-      if (pixels.length >= 20) {
-        const n = pixels.length;
-        regions.push({
-          pixels,
-          centerX: sumX / n,
-          centerY: sumY / n,
-        });
-      }
-    }
-  }
-
-  return regions;
-}
-
-/**
- * Build reassembly map with irregular blocks or connected regions
+ * Build reassembly map: for each block, calculate its movement offset.
  */
 export function generateReassemblyMap(
   width: number,
@@ -144,63 +18,94 @@ export function generateReassemblyMap(
   blockSize: number,
   strength: number,
   seed: number,
-  mode: ReassemblyMode = 'irregular-blocks'
+  mode: ReassemblyMode = 'scatter'
 ): ReassemblyMap {
+  const size = Math.max(1, Math.round(blockSize));
+  const cols = Math.ceil(width / size);
+  const rows = Math.ceil(height / size);
+  const total = cols * rows;
+
+  const offsetX = new Int16Array(total);
+  const offsetY = new Int16Array(total);
+  const flags = new Uint8Array(total);
+
   const k = Math.max(0, Math.min(100, strength)) / 100;
   const rand = mulberry32((seed ^ 0x27d4eb2f) >>> 0);
-  
-  const maxDim = Math.max(width, height);
-  const moveRadius = Math.max(2, Math.round(k * maxDim * 0.4));
 
-  if (mode === 'irregular-blocks') {
-    // Generate irregular rectangular blocks
-    const minSize = Math.max(4, Math.round(blockSize * 0.5));
-    const maxSize = Math.max(8, Math.round(blockSize * 2));
-    const blocks = generateIrregularBlocks(width, height, seed, minSize, maxSize);
-    
-    const total = blocks.length;
-    const offsetX = new Int16Array(total);
-    const offsetY = new Int16Array(total);
-    const flags = new Uint8Array(total);
+  // Movement radius depends on strength and image size
+  const maxDim = Math.max(cols, rows);
+  const radius = Math.max(1, Math.round(k * maxDim * 0.6));
+  const moveChance = 0.8 + k * 0.2; // 80-100% of blocks move
 
-    for (let i = 0; i < total; i++) {
-      if (rand() < 0.85) {
-        // Random direction (any angle, not just diagonal)
-        const angle = rand() * Math.PI * 2;
-        const dist = rand() * moveRadius;
-        offsetX[i] = Math.round(Math.cos(angle) * dist);
-        offsetY[i] = Math.round(Math.sin(angle) * dist);
-        
-        let f = 0;
-        if (k > 0.5 && rand() > 0.8) f |= 1; // flip X
-        if (k > 0.6 && rand() > 0.85) f |= 2; // flip Y
-        flags[i] = f;
+  for (let i = 0; i < total; i++) {
+    const bx = i % cols;
+    const by = Math.floor(i / cols);
+
+    if (rand() < moveChance) {
+      let ox = 0;
+      let oy = 0;
+
+      switch (mode) {
+        case 'scatter': {
+          // Random direction, random distance
+          const angle = rand() * Math.PI * 2;
+          const dist = (0.3 + rand() * 0.7) * radius;
+          ox = Math.round(Math.cos(angle) * dist);
+          oy = Math.round(Math.sin(angle) * dist);
+          break;
+        }
+
+        case 'flow': {
+          // Organic flow based on position
+          const angle = (bx / cols + by / rows) * Math.PI * 4 + rand() * 0.5;
+          const dist = radius * (0.3 + rand() * 0.7);
+          ox = Math.round(Math.cos(angle) * dist);
+          oy = Math.round(Math.sin(angle) * dist);
+          break;
+        }
+
+        case 'swap': {
+          // Swap with a neighbor in one of 4 directions
+          const dir = Math.floor(rand() * 4);
+          const swapDist = Math.max(1, Math.round(k * 6));
+          if (dir === 0) ox = swapDist;
+          else if (dir === 1) ox = -swapDist;
+          else if (dir === 2) oy = swapDist;
+          else oy = -swapDist;
+          break;
+        }
+
+        case 'vortex': {
+          // Spiral movement around center
+          const cx = cols / 2;
+          const cy = rows / 2;
+          const dx = bx - cx;
+          const dy = by - cy;
+          const spiralAngle = Math.atan2(dy, dx) + k * Math.PI * 2;
+          const spiralDist = radius * 0.4;
+          ox = Math.round(Math.cos(spiralAngle) * spiralDist - dx * k * 0.3);
+          oy = Math.round(Math.sin(spiralAngle) * spiralDist - dy * k * 0.3);
+          break;
+        }
       }
-    }
 
-    return {
-      blockSize: 0, // 0 means irregular blocks mode
-      cols: total,
-      rows: 0,
-      offsetX,
-      offsetY,
-      flags
-    };
-  } else {
-    // Connected regions mode (will be handled differently in applyReassemblyToFrame)
-    return {
-      blockSize: -1, // -1 means connected regions mode
-      cols: 0,
-      rows: 0,
-      offsetX: new Int16Array(0),
-      offsetY: new Int16Array(0),
-      flags: new Uint8Array(0)
-    };
+      offsetX[i] = ox;
+      offsetY[i] = oy;
+
+      // Random flip/rotate flags
+      let f = 0;
+      if (k > 0.5 && rand() > 0.85) f |= 1; // flip X
+      if (k > 0.6 && rand() > 0.9) f |= 2;  // flip Y
+      flags[i] = f;
+    }
   }
+
+  return { blockSize: size, cols, rows, offsetX, offsetY, flags };
 }
 
 /**
- * Apply reassembly to frame
+ * Apply reassembly map: move each block as a solid rectangle.
+ * Background is filled from original where blocks moved away.
  */
 export function applyReassemblyToFrame(
   frame: Frame,
@@ -210,77 +115,102 @@ export function applyReassemblyToFrame(
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
+  const { blockSize: size, cols, rows, offsetX, offsetY, flags } = map;
 
-  if (map.blockSize === 0) {
-    // Irregular blocks mode
-    // This is a simplified version - for full implementation, we'd need to store block data in ReassemblyMap
-    // For now, fall back to color segmentation approach
-    return src;
-  } else if (map.blockSize === -1) {
-    // Connected regions mode - use color segmentation logic
-    return src;
-  } else {
-    // Legacy uniform grid mode (original behavior)
-    const { blockSize: size, cols, rows, offsetX, offsetY, flags } = map;
-    const guard = Math.max(0, Math.min(100, silhouetteStrength)) / 100 * 0.3;
+  // Start with original as background (fills gaps where blocks moved away)
+  out.set(src);
 
-    for (let by = 0; by < rows; by++) {
-      for (let bx = 0; bx < cols; bx++) {
-        const bi = by * cols + bx;
-        let ox = offsetX[bi] ?? 0;
-        let oy = offsetY[bi] ?? 0;
-        const flag = flags[bi] ?? 0;
+  // Track which output pixels have been written by moved blocks
+  const written = new Uint8Array(width * height);
 
-        const x0 = bx * size;
-        const y0 = by * size;
-        const x1 = Math.min(width, x0 + size);
-        const y1 = Math.min(height, y0 + size);
+  // First pass: clear old positions of moving blocks
+  for (let by = 0; by < rows; by++) {
+    for (let bx = 0; bx < cols; bx++) {
+      const bi = by * cols + bx;
+      const ox = offsetX[bi] ?? 0;
+      const oy = offsetY[bi] ?? 0;
 
-        if (silhouetteMask && guard > 0) {
-          let sum = 0;
-          let n = 0;
-          for (let y = y0; y < y1; y += 3) {
-            for (let x = x0; x < x1; x += 3) {
-              sum += silhouetteMask[y * width + x] ?? 0;
-              n++;
-            }
-          }
-          const edge = n > 0 ? sum / n / 255 : 0;
-          const damp = 1 - Math.min(1, edge * guard);
-          ox = Math.round(ox * damp);
-          oy = Math.round(oy * damp);
+      if (ox === 0 && oy === 0) continue; // block doesn't move
+
+      const x0 = bx * size;
+      const y0 = by * size;
+      const x1 = Math.min(width, x0 + size);
+      const y1 = Math.min(height, y0 + size);
+
+      // Clear this block's old position (fill with background color or transparent)
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const di = (y * width + x) * 4;
+          out[di] = 0;
+          out[di + 1] = 0;
+          out[di + 2] = 0;
+          out[di + 3] = 0;
         }
+      }
+    }
+  }
 
-        const sxBase = (bx + ox) * size;
-        const syBase = (by + oy) * size;
+  // Second pass: place each block at its new position
+  // Process larger blocks first (they should win collisions)
+  for (let by = 0; by < rows; by++) {
+    for (let bx = 0; bx < cols; bx++) {
+      const bi = by * cols + bx;
+      const ox = offsetX[bi] ?? 0;
+      const oy = offsetY[bi] ?? 0;
+      const flag = flags[bi] ?? 0;
 
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            let lx = x - x0;
-            let ly = y - y0;
+      const x0 = bx * size;
+      const y0 = by * size;
+      const x1 = Math.min(width, x0 + size);
+      const y1 = Math.min(height, y0 + size);
 
-            if (flag & 4) {
-              const tmp = lx;
-              lx = size - 1 - ly;
-              ly = tmp;
-            }
-            const fx = flag & 1 ? size - 1 - lx : lx;
-            const fy = flag & 2 ? size - 1 - ly : ly;
+      // New position (wrap around edges)
+      const nx0 = ((x0 + ox * size) % width + width) % width;
+      const ny0 = ((y0 + oy * size) % height + height) % height;
 
-            let sx = sxBase + fx;
-            let sy = syBase + fy;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const lx = x - x0;
+          const ly = y - y0;
 
-            sx = ((sx % width) + width) % width;
-            sy = ((sy % height) + height) % height;
+          // Apply flip flags
+          const fx = flag & 1 ? size - 1 - lx : lx;
+          const fy = flag & 2 ? size - 1 - ly : ly;
 
-            const di = (y * width + x) * 4;
-            const si = (sy * width + sx) * 4;
-            out[di] = src[si] ?? 0;
-            out[di + 1] = src[si + 1] ?? 0;
-            out[di + 2] = src[si + 2] ?? 0;
-            out[di + 3] = src[si + 3] ?? 255;
+          // Source coordinates
+          const sx = x0 + fx;
+          const sy = y0 + fy;
+
+          // Destination coordinates (wrapped)
+          const dx = ((nx0 + lx) % width + width) % width;
+          const dy = ((ny0 + ly) % height + height) % height;
+
+          const si = (sy * width + sx) * 4;
+          const di = (dy * width + dx) * 4;
+
+          // Only write if destination is empty (first block wins)
+          if (!written[dy * width + dx]) {
+            out[di] = src[si];
+            out[di + 1] = src[si + 1];
+            out[di + 2] = src[si + 2];
+            out[di + 3] = src[si + 3];
+            written[dy * width + dx] = 1;
           }
         }
+      }
+    }
+  }
+
+  // Third pass: fill any remaining empty pixels with original
+  for (let i = 0; i < width * height; i++) {
+    if (!written[i]) {
+      const di = i * 4;
+      // Check if this pixel was cleared (alpha = 0)
+      if (out[di + 3] === 0 && src[di + 3] > 0) {
+        out[di] = src[di];
+        out[di + 1] = src[di + 1];
+        out[di + 2] = src[di + 2];
+        out[di + 3] = src[di + 3];
       }
     }
   }

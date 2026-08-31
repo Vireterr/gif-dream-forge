@@ -1,12 +1,3 @@
-/**
- * Color-based segmentation with TARGET COLORS and PIXELATION.
- *
- * Pipeline:
- * 1. Pixelate the frame (group pixels into blocks of N×N)
- * 2. Find pixels matching target colors
- * 3. Move entire color regions as solid blocky shapes
- */
-
 import type { Frame, TargetColor } from './types';
 import { mulberry32 } from '../utils/noise';
 
@@ -79,8 +70,7 @@ function buildPalette(
 }
 
 /**
- * Pixelate frame: group pixels into blockSize×blockSize blocks,
- * each block gets the average color of its pixels.
+ * Pixelate frame using DOMINANT color (not average).
  */
 function pixelateFrame(
   rgba: Uint8ClampedArray,
@@ -98,32 +88,47 @@ function pixelateFrame(
       const x1 = Math.min(width, bx + size);
       const y1 = Math.min(height, by + size);
 
-      // Calculate average color of this block
-      let sumR = 0, sumG = 0, sumB = 0, sumA = 0, n = 0;
+      const colorCounts = new Map<number, { r: number; g: number; b: number; a: number; count: number }>();
+      
       for (let y = by; y < y1; y++) {
         for (let x = bx; x < x1; x++) {
           const i = (y * width + x) * 4;
-          sumR += rgba[i];
-          sumG += rgba[i + 1];
-          sumB += rgba[i + 2];
-          sumA += rgba[i + 3];
-          n++;
+          const r = rgba[i];
+          const g = rgba[i + 1];
+          const b = rgba[i + 2];
+          const a = rgba[i + 3];
+          
+          const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+          
+          const existing = colorCounts.get(key);
+          if (existing) {
+            existing.count++;
+          } else {
+            colorCounts.set(key, { r, g, b, a, count: 1 });
+          }
         }
       }
 
-      const avgR = Math.round(sumR / n);
-      const avgG = Math.round(sumG / n);
-      const avgB = Math.round(sumB / n);
-      const avgA = Math.round(sumA / n);
+      let dominantR = 0, dominantG = 0, dominantB = 0, dominantA = 255;
+      let maxCount = 0;
+      
+      for (const entry of colorCounts.values()) {
+        if (entry.count > maxCount) {
+          maxCount = entry.count;
+          dominantR = entry.r;
+          dominantG = entry.g;
+          dominantB = entry.b;
+          dominantA = entry.a;
+        }
+      }
 
-      // Fill entire block with average color
       for (let y = by; y < y1; y++) {
         for (let x = bx; x < x1; x++) {
           const i = (y * width + x) * 4;
-          out[i] = avgR;
-          out[i + 1] = avgG;
-          out[i + 2] = avgB;
-          out[i + 3] = avgA;
+          out[i] = dominantR;
+          out[i + 1] = dominantG;
+          out[i + 2] = dominantB;
+          out[i + 3] = dominantA;
         }
       }
     }
@@ -147,10 +152,6 @@ function matchesTargetColor(
   return dist <= threshold;
 }
 
-/**
- * Move ONLY pixels matching ANY of the target colors.
- * Each target color moves as ONE solid blocky shape.
- */
 export function moveTargetColors(
   frame: Frame,
   strength: number,
@@ -164,12 +165,10 @@ export function moveTargetColors(
 
   if (k <= 0 || targets.length === 0) return new Uint8ClampedArray(src);
 
-  // 🆕 STEP 0: Pixelate first (if pixelSize > 1)
   const workRgba = pixelSize > 1
     ? pixelateFrame(src, width, height, pixelSize)
     : src;
 
-  // 1. Group pixels by which target color they match
   const groups: number[][] = targets.map(() => []);
   for (let i = 0; i < totalPixels; i++) {
     const pi = i * 4;
@@ -187,7 +186,6 @@ export function moveTargetColors(
     }
   }
 
-  // 2. Generate movement for each target color
   const rand = mulberry32((seed ^ 0x9e3779b9) >>> 0);
   const maxDim = Math.max(width, height);
   const moveRadius = Math.max(4, Math.round(k * maxDim * 0.5));
@@ -202,11 +200,9 @@ export function moveTargetColors(
     };
   });
 
-  // 3. Build output: start with original, clear target pixels, place at new positions
   const out = new Uint8ClampedArray(src);
   const written = new Uint8Array(totalPixels);
 
-  // Clear old positions
   for (const group of groups) {
     for (const idx of group) {
       const di = idx * 4;
@@ -217,7 +213,6 @@ export function moveTargetColors(
     }
   }
 
-  // Place each group at new position
   const sortedIndices = groups
     .map((g, i) => i)
     .sort((a, b) => groups[b].length - groups[a].length);
@@ -248,9 +243,6 @@ export function moveTargetColors(
   return out;
 }
 
-/**
- * Move ALL color regions (palette-based) with optional pixelation.
- */
 export function moveColorRegions(
   frame: Frame,
   strength: number,
@@ -264,7 +256,6 @@ export function moveColorRegions(
 
   if (k <= 0) return new Uint8ClampedArray(src);
 
-  // 🆕 Pixelate first
   const workRgba = pixelSize > 1
     ? pixelateFrame(src, width, height, pixelSize)
     : src;

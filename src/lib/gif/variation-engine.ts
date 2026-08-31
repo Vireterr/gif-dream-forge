@@ -1,7 +1,3 @@
-/**
- * Variation Engine - Main orchestrator for generating GIF variations
- */
-
 import type { Frame, VariationConfig, VariationResult, MotionMask } from './types';
 import { decodeGif } from './decode';
 import { encodeVariation } from './encode';
@@ -33,7 +29,7 @@ export async function generateVariations(
   const blockSize = config.blockSize ?? 8;
   const reassemblyMode = config.reassemblyMode ?? 'scatter';
   const colorSegStrength = config.colorSegmentation ?? 0;
-  const colorThreshold = config.colorThreshold ?? 30;
+  const colorThreshold = config.colorThreshold ?? 40;
 
   const originalFrames = await decodeGif(file);
 
@@ -56,22 +52,16 @@ export async function generateVariations(
   const results: VariationResult[] = [];
 
   for (let v = 0; v < count; v++) {
-    if (shouldCancel?.()) {
-      break;
-    }
+    if (shouldCancel?.()) break;
 
     const variationSeed = Math.floor(Math.random() * 1e9) + v * 2654435761;
-
     const flowSim = stageSimilarity(similarity, flowStrength);
     const colorSim = stageSimilarity(similarity, colorStrength);
 
     const displacementField = generateDisplacementField(width, height, flowSim, variationSeed);
     const colorTransform = generateColorTransform(colorSim, variationSeed);
     const geometryTransform = generateGeometryTransform(
-      similarity,
-      geometryStrength,
-      variationSeed,
-      allowMirror
+      similarity, geometryStrength, variationSeed, allowMirror
     );
 
     const reassemblyMap = reassemblyStrength > 0
@@ -79,19 +69,18 @@ export async function generateVariations(
       : null;
 
     const temporalAmplitude = ((100 - flowSim) / 100) * 5;
-
     const variationFrames: Frame[] = [];
 
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color segmentation — move entire color regions as solid shapes
+      // STEP 1: Color segmentation — SAME seed for all frames!
       if (colorSegStrength > 0) {
         const segRgba = moveColorRegions(
           currentFrame,
           colorSegStrength,
-          variationSeed + f,
+          variationSeed,  // ← ОДИН seed для всех кадров
           colorThreshold
         );
         currentFrame = {
@@ -102,13 +91,10 @@ export async function generateVariations(
         };
       }
 
-      // STEP 2: Reassembly (block shuffle) — optional
+      // STEP 2: Reassembly
       if (reassemblyMap) {
         const reassembledRgba = applyReassemblyToFrame(
-          currentFrame,
-          reassemblyMap,
-          silhouetteMask,
-          silhouetteStrength
+          currentFrame, reassemblyMap, silhouetteMask, silhouetteStrength
         );
         currentFrame = {
           rgba: reassembledRgba,
@@ -118,7 +104,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 3: Geometry / shape warp
+      // STEP 3: Geometry
       const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
       const geoFrame: Frame = {
         rgba: geoRgba,
@@ -127,15 +113,11 @@ export async function generateVariations(
         height: currentFrame.height
       };
 
-      // STEP 4: Organic noise displacement with temporal consistency
+      // STEP 4: Displacement
       const modulatedField = applyTemporalConsistency(
-        displacementField,
-        f,
-        totalFrames,
-        temporalAmplitude
+        displacementField, f, totalFrames, temporalAmplitude
       );
       const warpedRgba = warpFrame(geoFrame, modulatedField, motionMask?.data);
-
       const warpedFrame: Frame = {
         rgba: warpedRgba,
         delay: geoFrame.delay,
@@ -153,22 +135,15 @@ export async function generateVariations(
         height: warpedFrame.height
       });
 
-      if (f % 4 === 3) {
-        await new Promise(r => setTimeout(r, 0));
-      }
+      if (f % 4 === 3) await new Promise(r => setTimeout(r, 0));
     }
 
     const { url, bytes } = await encodeVariation(variationFrames);
-
     results.push({
       id: `v${v + 1}-${variationSeed}`,
-      url,
-      bytes,
-      seed: variationSeed
+      url, bytes, seed: variationSeed
     });
-
     onProgress?.(v + 1, count);
-
     await new Promise(r => setTimeout(r, 0));
   }
 
@@ -176,47 +151,32 @@ export async function generateVariations(
 }
 
 export async function previewVariation(
-  file: File,
-  similarity: number,
-  seed: number
+  file: File, similarity: number, seed: number
 ): Promise<{ frames: Frame[]; width: number; height: number }> {
   const originalFrames = await decodeGif(file);
-
-  if (originalFrames.length === 0) {
-    throw new Error('No frames found in GIF');
-  }
+  if (originalFrames.length === 0) throw new Error('No frames found in GIF');
 
   const { width, height } = originalFrames[0]!;
   const totalFrames = originalFrames.length;
-
   const displacementField = generateDisplacementField(width, height, similarity, seed);
   const colorTransform = generateColorTransform(similarity, seed);
   const temporalAmplitude = ((100 - similarity) / 100) * 5;
-
   const previewFrameCount = Math.min(8, totalFrames);
   const previewFrames: Frame[] = [];
 
   for (let f = 0; f < previewFrameCount; f++) {
     const originalFrame = originalFrames[f]!;
-
     const modulatedField = applyTemporalConsistency(
-      displacementField,
-      f,
-      totalFrames,
-      temporalAmplitude
+      displacementField, f, totalFrames, temporalAmplitude
     );
-
     const warpedRgba = warpFrame(originalFrame, modulatedField);
-
     const warpedFrame: Frame = {
       rgba: warpedRgba,
       delay: originalFrame.delay,
       width: originalFrame.width,
       height: originalFrame.height
     };
-
     const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
-
     previewFrames.push({
       rgba: coloredRgba,
       delay: warpedFrame.delay,
@@ -225,9 +185,5 @@ export async function previewVariation(
     });
   }
 
-  return {
-    frames: previewFrames,
-    width,
-    height
-  };
+  return { frames: previewFrames, width, height };
 }

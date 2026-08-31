@@ -1,8 +1,8 @@
 /**
- * Reassembly: splits image into blocks and moves each block.
+ * Reassembly: blocks SWAP positions with each other (like a puzzle).
  * Block size is a PERCENTAGE of image size (0-100%).
- * Old positions are filled with AVERAGE NEIGHBOR COLOR (not original).
- * Silhouette mask protects object edges — blocks on boundaries move less.
+ * Old positions are filled with AVERAGE NEIGHBOR COLOR.
+ * Silhouette mask protects object edges — blocks on boundaries don't swap.
  */
 
 import type { Frame, ReassemblyMap } from './types';
@@ -54,7 +54,9 @@ export function generateReassemblyMap(
   height: number,
   blockSizePercent: number,
   strength: number,
-  seed: number
+  seed: number,
+  silhouetteMask?: Uint8Array,
+  silhouetteStrength = 0
 ): ReassemblyMap {
   const k = Math.max(0, Math.min(100, strength)) / 100;
   const percent = Math.max(0, Math.min(100, blockSizePercent)) / 100;
@@ -69,68 +71,90 @@ export function generateReassemblyMap(
   const flags = new Uint8Array(total);
 
   const rand = mulberry32((seed ^ 0x27d4eb2f) >>> 0);
-  const radius = Math.max(1, Math.round(k * size * 0.8));
-  const moveChance = 0.8 + k * 0.2;
 
+  // 🆕 Create list of all block indices
+  const blockIndices: number[] = [];
   for (let i = 0; i < total; i++) {
-    if (rand() < moveChance) {
-      const angle = rand() * Math.PI * 2;
-      const dist = (0.3 + rand() * 0.7) * radius;
-      offsetX[i] = Math.round(Math.cos(angle) * dist);
-      offsetY[i] = Math.round(Math.sin(angle) * dist);
+    blockIndices.push(i);
+  }
 
-      let f = 0;
-      if (k > 0.5 && rand() > 0.85) f |= 1;
-      if (k > 0.6 && rand() > 0.9) f |= 2;
-      flags[i] = f;
+  // 🆕 Filter out blocks on edges (if silhouette protection is enabled)
+  const movableBlocks: number[] = [];
+  for (const i of blockIndices) {
+    const bx = i % cols;
+    const by = Math.floor(i / cols);
+    const x0 = bx * size;
+    const y0 = by * size;
+    const x1 = Math.min(width, x0 + size);
+    const y1 = Math.min(height, y0 + size);
+
+    // Check if this block is on an edge
+    let isOnEdge = false;
+    if (silhouetteMask && silhouetteStrength > 0) {
+      const guard = Math.min(100, silhouetteStrength) / 100;
+      let edgeSum = 0;
+      let edgeCount = 0;
+      for (let y = y0; y < y1; y += 3) {
+        for (let x = x0; x < x1; x += 3) {
+          edgeSum += silhouetteMask[y * width + x] ?? 0;
+          edgeCount++;
+        }
+      }
+      if (edgeCount > 0) {
+        const edgeValue = edgeSum / edgeCount / 255;
+        if (edgeValue * guard > 0.3) {
+          isOnEdge = true;
+        }
+      }
+    }
+
+    if (!isOnEdge) {
+      movableBlocks.push(i);
     }
   }
+
+  // 🆕 Shuffle movable blocks (Fisher-Yates algorithm)
+  for (let i = movableBlocks.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [movableBlocks[i], movableBlocks[j]] = [movableBlocks[j], movableBlocks[i]];
+  }
+
+  // 🆕 Create swap pairs: block A goes to position of block B, and vice versa
+  const swapMap = new Map<number, number>();
+  for (let i = 0; i < movableBlocks.length - 1; i += 2) {
+    const blockA = movableBlocks[i];
+    const blockB = movableBlocks[i + 1];
+    
+    // Calculate swap offset for block A (where block B is)
+    const ax = blockA % cols;
+    const ay = Math.floor(blockA / cols);
+    const bx = blockB % cols;
+    const by = Math.floor(blockB / cols);
+    
+    offsetX[blockA] = bx - ax;
+    offsetY[blockA] = by - ay;
+    
+    // Calculate swap offset for block B (where block A is)
+    offsetX[blockB] = ax - bx;
+    offsetY[blockB] = ay - by;
+    
+    // Random flip for visual variety
+    if (k > 0.5 && rand() > 0.7) {
+      flags[blockA] |= rand() > 0.5 ? 1 : 2;
+      flags[blockB] |= rand() > 0.5 ? 1 : 2;
+    }
+  }
+
+  // If odd number of blocks, last one stays in place (offsets already 0)
 
   return { blockSize: size, cols, rows, offsetX, offsetY, flags };
-}
-
-/**
- * Calculate how much a block should be damped based on silhouette mask.
- * Returns 0-1, where 0 = fully damped (on edge), 1 = no damping (not on edge).
- */
-function calculateEdgeDamping(
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-  width: number,
-  silhouetteMask: Uint8Array | undefined,
-  silhouetteStrength: number
-): number {
-  if (!silhouetteMask || silhouetteStrength <= 0) return 1;
-
-  const guard = Math.min(100, silhouetteStrength) / 100;
-  let sum = 0;
-  let count = 0;
-
-  // Sample every 3rd pixel for performance
-  for (let y = y0; y < y1; y += 3) {
-    for (let x = x0; x < x1; x += 3) {
-      sum += silhouetteMask[y * width + x] ?? 0;
-      count++;
-    }
-  }
-
-  if (count === 0) return 1;
-
-  // edgeValue: 0 = no edges in block, 1 = all pixels are edges
-  const edgeValue = sum / count / 255;
-
-  // dampening: 1 = no damping, 0 = fully damped
-  const dampening = 1 - Math.min(1, edgeValue * guard);
-  return dampening;
 }
 
 export function applyReassemblyToFrame(
   frame: Frame,
   map: ReassemblyMap,
-  silhouetteMask?: Uint8Array,
-  silhouetteStrength = 0
+  _silhouetteMask?: Uint8Array,
+  _silhouetteStrength = 0
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
@@ -153,8 +177,8 @@ export function applyReassemblyToFrame(
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
       const bi = by * cols + bx;
-      let ox = offsetX[bi] ?? 0;
-      let oy = offsetY[bi] ?? 0;
+      const ox = offsetX[bi] ?? 0;
+      const oy = offsetY[bi] ?? 0;
       const flag = flags[bi] ?? 0;
 
       if (ox === 0 && oy === 0) continue;
@@ -165,16 +189,6 @@ export function applyReassemblyToFrame(
       const y1 = Math.min(height, y0 + size);
       const w = x1 - x0;
       const h = y1 - y0;
-
-      // 🆕 Apply silhouette damping to this block's movement
-      const damping = calculateEdgeDamping(
-        x0, y0, x1, y1, width, silhouetteMask, silhouetteStrength
-      );
-      ox = Math.round(ox * damping);
-      oy = Math.round(oy * damping);
-
-      // If fully damped, skip this block
-      if (ox === 0 && oy === 0) continue;
 
       const pixels = new Uint8ClampedArray(w * h * 4);
       for (let y = y0; y < y1; y++) {
@@ -192,6 +206,7 @@ export function applyReassemblyToFrame(
         }
       }
 
+      // 🆕 For swap logic, new position is calculated differently
       const newX = ((x0 + ox * size) % width + width) % width;
       const newY = ((y0 + oy * size) % height + height) % height;
 

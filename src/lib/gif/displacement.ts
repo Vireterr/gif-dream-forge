@@ -1,149 +1,139 @@
 /**
- * Displacement field generation and frame warping
+ * Organic flow: Perlin noise displacement.
+ * No temporal consistency — stable noise per variation.
  */
 
-import type { DisplacementField, Frame } from './types';
-import { fbmNoise2D, mulberry32 } from '../utils/noise';
+import type { Frame, DisplacementField } from './types';
+import { mulberry32 } from '../utils/noise';
 
-/**
- * Generate a displacement field using Perlin noise
- * The field defines how much each pixel should be displaced (dx, dy)
- */
+function fade(t: number): number {
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + t * (b - a);
+}
+
+function grad(hash: number, x: number, y: number): number {
+  const h = hash & 3;
+  const u = h < 2 ? x : y;
+  const v = h < 2 ? y : x;
+  return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+}
+
+class PerlinNoise {
+  private perm: Uint8Array;
+
+  constructor(seed: number) {
+    const rand = mulberry32(seed);
+    this.perm = new Uint8Array(512);
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+  }
+
+  noise(x: number, y: number): number {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    x -= Math.floor(x);
+    y -= Math.floor(y);
+    const u = fade(x);
+    const v = fade(y);
+    const A = this.perm[X] + Y;
+    const B = this.perm[X + 1] + Y;
+    return lerp(
+      lerp(grad(this.perm[A], x, y), grad(this.perm[B], x - 1, y), u),
+      lerp(grad(this.perm[A + 1], x, y - 1), grad(this.perm[B + 1], x - 1, y - 1), u),
+      v
+    );
+  }
+}
+
 export function generateDisplacementField(
   width: number,
   height: number,
-  similarity: number,
+  strength: number,
   seed: number
 ): DisplacementField {
-  // Higher similarity = lower amplitude (less displacement)
-  // 100% -> 0-1px, 90% -> 0-3px, 75% -> 0-8px, 50% -> 0-20px
-  const maxAmplitude = ((100 - similarity) / 100) * 20;
-  
-  // Higher similarity = lower frequency (smoother, larger displacements)
-  const baseFreq = 1 + ((100 - similarity) / 100) * 4;
-  
   const dx = new Float32Array(width * height);
   const dy = new Float32Array(width * height);
-  
-  const rand = mulberry32(seed);
-  const phaseX = rand() * 1000;
-  const phaseY = rand() * 1000;
-  
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const nx = (x / width) * baseFreq + phaseX;
-      const ny = (y / height) * baseFreq + phaseY;
-      
-      // Get noise values for dx and dy (using different offsets for variety)
-      const noiseX = fbmNoise2D(nx, ny, 4, 2, 0.5);
-      const noiseY = fbmNoise2D(nx + 5.3, ny + 2.7, 4, 2, 0.5);
-      
-      // Convert to -1 to 1 range and apply amplitude
-      const dX = (noiseX - 0.5) * 2 * maxAmplitude;
-      const dY = (noiseY - 0.5) * 2 * maxAmplitude;
-      
-      dx[y * width + x] = dX;
-      dy[y * width + x] = dY;
-    }
-  }
-  
-  return { dx, dy, width, height };
-}
 
-/**
- * Warp a frame using bilinear interpolation based on displacement field
- */
-export function warpFrame(
-  sourceFrame: Frame,
-  displacementField: DisplacementField,
-  motionMask?: Uint8Array
-): Uint8ClampedArray {
-  const { rgba: srcData } = sourceFrame;
-  const { width, height } = sourceFrame;
-  const { dx, dy } = displacementField;
-  
-  const output = new Uint8ClampedArray(width * height * 4);
-  
+  const k = Math.max(0, Math.min(100, strength)) / 100;
+  const amplitude = k * 50; // Increased amplitude
+  const frequency = 0.02 + k * 0.03;
+
+  const perlin = new PerlinNoise(seed);
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      
-      // Apply motion mask to reduce displacement in moving areas
-      let displacementScale = 1;
-      if (motionMask) {
-        const maskValue = motionMask[idx] ?? 0;
-        // Reduce displacement by up to 50% in high-motion areas
-        displacementScale = 1 - (maskValue / 255) * 0.5;
-      }
-      
-      // Calculate source position with displacement
-      const srcX = x + dx[idx]! * displacementScale;
-      const srcY = y + dy[idx]! * displacementScale;
-      
-      // Clamp to bounds
-      const clampedSrcX = Math.max(0, Math.min(width - 1.001, srcX));
-      const clampedSrcY = Math.max(0, Math.min(height - 1.001, srcY));
-      
-      // Bilinear interpolation
-      const x0 = Math.floor(clampedSrcX);
-      const y0 = Math.floor(clampedSrcY);
-      const x1 = Math.min(x0 + 1, width - 1);
-      const y1 = Math.min(y0 + 1, height - 1);
-      
-      const tx = clampedSrcX - x0;
-      const ty = clampedSrcY - y0;
-      
-      // Interpolate each channel
+      dx[idx] = perlin.noise(x * frequency, y * frequency) * amplitude;
+      dy[idx] = perlin.noise(x * frequency + 100, y * frequency + 100) * amplitude;
+    }
+  }
+
+  return { dx, dy, width, height };
+}
+
+export function warpFrame(
+  frame: Frame,
+  field: DisplacementField,
+  _motionMask?: Uint8Array
+): Uint8ClampedArray {
+  const { rgba: src, width, height } = frame;
+  const out = new Uint8ClampedArray(src.length);
+  const { dx, dy } = field;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const srcX = x - dx[idx];
+      const srcY = y - dy[idx];
+
+      const x0 = Math.floor(srcX);
+      const y0 = Math.floor(srcY);
+      const x1 = x0 + 1;
+      const y1 = y0 + 1;
+      const fx = srcX - x0;
+      const fy = srcY - y0;
+
+      const cx0 = Math.max(0, Math.min(width - 1, x0));
+      const cx1 = Math.max(0, Math.min(width - 1, x1));
+      const cy0 = Math.max(0, Math.min(height - 1, y0));
+      const cy1 = Math.max(0, Math.min(height - 1, y1));
+
+      const i00 = (cy0 * width + cx0) * 4;
+      const i10 = (cy0 * width + cx1) * 4;
+      const i01 = (cy1 * width + cx0) * 4;
+      const i11 = (cy1 * width + cx1) * 4;
+
+      const di = idx * 4;
       for (let c = 0; c < 4; c++) {
-        const p00 = srcData[(y0 * width + x0) * 4 + c] ?? 0;
-        const p10 = srcData[(y0 * width + x1) * 4 + c] ?? 0;
-        const p01 = srcData[(y1 * width + x0) * 4 + c] ?? 0;
-        const p11 = srcData[(y1 * width + x1) * 4 + c] ?? 0;
-        
-        // Bilinear interpolation formula
-        const value =
-          p00 * (1 - tx) * (1 - ty) +
-          p10 * tx * (1 - ty) +
-          p01 * (1 - tx) * ty +
-          p11 * tx * ty;
-        
-        output[idx * 4 + c] = Math.round(value);
+        const v00 = src[i00 + c];
+        const v10 = src[i10 + c];
+        const v01 = src[i01 + c];
+        const v11 = src[i11 + c];
+
+        const top = v00 + (v10 - v00) * fx;
+        const bottom = v01 + (v11 - v01) * fx;
+        out[di + c] = Math.round(top + (bottom - top) * fy);
       }
     }
   }
-  
-  return output;
+
+  return out;
 }
 
-/**
- * Modify displacement field with temporal consistency
- * Adds smooth sinusoidal modulation based on frame index
- */
 export function applyTemporalConsistency(
-  baseField: DisplacementField,
-  frameIndex: number,
-  totalFrames: number,
-  temporalAmplitude: number
+  field: DisplacementField,
+  _frameIndex: number,
+  _totalFrames: number,
+  _amplitude: number
 ): DisplacementField {
-  const { dx, dy, width, height } = baseField;
-  
-  // Create modulated copies
-  const modulatedDx = new Float32Array(dx.length);
-  const modulatedDy = new Float32Array(dy.length);
-  
-  // Smooth sinusoidal phase (not random!)
-  const phase = (frameIndex / totalFrames) * Math.PI * 2;
-  const temporalModulation = Math.sin(phase) * temporalAmplitude;
-  
-  for (let i = 0; i < dx.length; i++) {
-    modulatedDx[i] = dx[i]! + temporalModulation;
-    modulatedDy[i] = dy[i]! + temporalModulation * 0.5; // Less modulation on Y axis
-  }
-  
-  return {
-    dx: modulatedDx,
-    dy: modulatedDy,
-    width,
-    height
-  };
+  // No temporal consistency — return field as-is
+  return field;
 }

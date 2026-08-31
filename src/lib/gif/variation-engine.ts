@@ -11,6 +11,7 @@ import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
 import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
+import { moveColorRegions } from './color-segmentation';
 
 function stageSimilarity(similarity: number, strength: number): number {
   return 100 - (100 - similarity) * (strength / 100);
@@ -31,6 +32,8 @@ export async function generateVariations(
   const reassemblyStrength = config.reassembly ?? 0;
   const blockSize = config.blockSize ?? 8;
   const reassemblyMode = config.reassemblyMode ?? 'scatter';
+  const colorSegStrength = config.colorSegmentation ?? 0;
+  const colorThreshold = config.colorThreshold ?? 30;
 
   const originalFrames = await decodeGif(file);
 
@@ -81,23 +84,41 @@ export async function generateVariations(
 
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
-
       let currentFrame: Frame = originalFrame;
+
+      // STEP 1: Color segmentation — move entire color regions as solid shapes
+      if (colorSegStrength > 0) {
+        const segRgba = moveColorRegions(
+          currentFrame,
+          colorSegStrength,
+          variationSeed + f,
+          colorThreshold
+        );
+        currentFrame = {
+          rgba: segRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height
+        };
+      }
+
+      // STEP 2: Reassembly (block shuffle) — optional
       if (reassemblyMap) {
         const reassembledRgba = applyReassemblyToFrame(
-          originalFrame,
+          currentFrame,
           reassemblyMap,
           silhouetteMask,
           silhouetteStrength
         );
         currentFrame = {
           rgba: reassembledRgba,
-          delay: originalFrame.delay,
-          width: originalFrame.width,
-          height: originalFrame.height
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height
         };
       }
 
+      // STEP 3: Geometry / shape warp
       const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
       const geoFrame: Frame = {
         rgba: geoRgba,
@@ -106,6 +127,7 @@ export async function generateVariations(
         height: currentFrame.height
       };
 
+      // STEP 4: Organic noise displacement with temporal consistency
       const modulatedField = applyTemporalConsistency(
         displacementField,
         f,
@@ -121,6 +143,7 @@ export async function generateVariations(
         height: geoFrame.height
       };
 
+      // STEP 5: Color transform
       const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
 
       variationFrames.push({

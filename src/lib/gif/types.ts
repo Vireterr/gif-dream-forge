@@ -17,7 +17,7 @@ export interface VariationConfig {
   blockSize?: number;
   reassemblyMode?: 'scatter' | 'flow' | 'swap' | 'vortex';
   colorSegmentation?: number;
-  colorThreshold?: number;
+  numColors?: number;
 }
 
 export interface ReassemblyMap {

@@ -8,6 +8,8 @@ import { encodeVariation } from './encode';
 import { generateDisplacementField, warpFrame, applyTemporalConsistency } from './displacement';
 import { generateColorTransform, applyColorTransformToFrame } from './color-transform';
 import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
+import { computeSilhouetteMask, preserveSilhouette } from './silhouette';
+import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
 
 /** Blend a global similarity with a per-stage strength (0-100). */
@@ -29,6 +31,9 @@ export async function generateVariations(
   const colorStrength = config.color ?? 60;
   const flowStrength = config.flow ?? 60;
   const allowMirror = config.mirror ?? false;
+  const silhouetteStrength = config.silhouette ?? 50;
+  const reassemblyStrength = config.reassembly ?? 0;
+  const blockSize = config.blockSize ?? 8;
 
   // Decode original GIF
   const originalFrames = await decodeGif(file);
@@ -45,6 +50,12 @@ export async function generateVariations(
   if (totalFrames >= 2) {
     motionMask = computeMotionMask(originalFrames[0]!, originalFrames[1]!);
   }
+
+  // Silhouette / contour mask from the first frame
+  const silhouetteMask = silhouetteStrength > 0
+    ? computeSilhouetteMask(originalFrames[0]!).data
+    : undefined;
+
   
   const results: VariationResult[] = [];
   

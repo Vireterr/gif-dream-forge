@@ -1,10 +1,40 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef } from "react";
-import type { VariationResult } from "../lib/gif/types";
+import type { VariationResult, TargetColor } from "../lib/gif/types";
 import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
 type ReassemblyMode = "scatter" | "flow" | "swap" | "vortex";
+
+const PRESET_COLORS: Array<{ name: string; r: number; g: number; b: number }> = [
+  { name: "Красный", r: 220, g: 30, b: 30 },
+  { name: "Малиновый", r: 220, g: 20, b: 60 },
+  { name: "Синий", r: 30, g: 60, b: 220 },
+  { name: "Жёлтый", r: 240, g: 220, b: 30 },
+  { name: "Зелёный", r: 30, g: 180, b: 60 },
+  { name: "Фиолетовый", r: 140, g: 40, b: 200 },
+  { name: "Оранжевый", r: 240, g: 130, b: 30 },
+  { name: "Белый", r: 240, g: 240, b: 240 },
+  { name: "Чёрный", r: 20, g: 20, b: 20 },
+];
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace("#", "");
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16),
+  };
+}
+
+let colorIdCounter = 0;
+function makeColor(r: number, g: number, b: number, tolerance = 25, enabled = true): TargetColor {
+  return { id: `c${++colorIdCounter}`, r, g, b, tolerance, enabled };
+}
 
 function getSimilarityDescription(similarity: number): string {
   if (similarity >= 90) return "Minimal changes, almost identical";
@@ -17,12 +47,8 @@ function getSimilarityDescription(similarity: number): string {
 function GifVariationStudio() {
   const [file, setFile] = useState<File | null>(null);
   const [originalInfo, setOriginalInfo] = useState<{
-    frames: number;
-    width: number;
-    height: number;
-    duration: number;
-    fps: number;
-    thumb?: string;
+    frames: number; width: number; height: number;
+    duration: number; fps: number; thumb?: string;
   } | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
   const [similarity, setSimilarity] = useState(75);
@@ -35,6 +61,10 @@ function GifVariationStudio() {
   const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>("scatter");
   const [colorSegmentation, setColorSegmentation] = useState(85);
   const [numColors, setNumColors] = useState(8);
+  const [targetColorsMode, setTargetColorsMode] = useState(true);
+  const [targetColors, setTargetColors] = useState<TargetColor[]>([
+    makeColor(220, 20, 60, 25, true),  // малиновый
+  ]);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
@@ -63,19 +93,14 @@ function GifVariationStudio() {
 
   async function analyzeGif() {
     if (!file) return;
-
     setStage("decoding");
     setError(null);
-
     try {
       const { parseGIF, decompressFrames } = await import("gifuct-js");
       const buffer = await file.arrayBuffer();
       const gif = parseGIF(buffer);
       const frames = decompressFrames(gif, true);
-
-      if (!frames.length) {
-        throw new Error("No frames found in GIF");
-      }
+      if (!frames.length) throw new Error("No frames found in GIF");
 
       const width = gif.lsd.width;
       const height = gif.lsd.height;
@@ -86,13 +111,11 @@ function GifVariationStudio() {
       canvas.width = Math.min(320, width);
       canvas.height = Math.min(240, height);
       const ctx = canvas.getContext("2d");
-
       if (ctx && frames[0]) {
         const patchCanvas = document.createElement("canvas");
         patchCanvas.width = frames[0].dims.width;
         patchCanvas.height = frames[0].dims.height;
         const patchCtx = patchCanvas.getContext("2d");
-
         if (patchCtx) {
           patchCtx.putImageData(
             new ImageData(
@@ -100,22 +123,17 @@ function GifVariationStudio() {
               frames[0].dims.width,
               frames[0].dims.height
             ),
-            0,
-            0
+            0, 0
           );
           ctx.drawImage(patchCanvas, 0, 0, canvas.width, canvas.height);
         }
       }
 
       setOriginalInfo({
-        frames: frames.length,
-        width,
-        height,
-        duration: totalDelay,
-        fps,
+        frames: frames.length, width, height,
+        duration: totalDelay, fps,
         thumb: canvas.toDataURL("image/png"),
       });
-
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read this GIF");
@@ -125,11 +143,9 @@ function GifVariationStudio() {
 
   async function generate() {
     if (!file || !originalInfo) return;
-
     cancelRef.current = false;
     setStage("generating");
     setProgress(0);
-
     results.forEach((r) => URL.revokeObjectURL(r.url));
     setResults([]);
 
@@ -137,25 +153,14 @@ function GifVariationStudio() {
       const variationResults = await generateVariations(
         file,
         {
-          similarity,
-          count,
-          geometry,
-          color,
-          flow,
-          mirror,
-          reassembly,
-          blockSize,
-          silhouette,
-          reassemblyMode,
-          colorSegmentation,
-          numColors,
+          similarity, count, geometry, color, flow, mirror,
+          reassembly, blockSize, silhouette, reassemblyMode,
+          colorSegmentation, numColors,
+          targetColorsMode, targetColors,
         },
-        (current, total) => {
-          setProgress(current / total);
-        },
+        (current, total) => setProgress(current / total),
         () => cancelRef.current
       );
-
       setResults(variationResults);
       setStage("ready");
     } catch (e) {
@@ -173,20 +178,35 @@ function GifVariationStudio() {
     });
   }
 
+  function addPresetColor(preset: typeof PRESET_COLORS[number]) {
+    setTargetColors((prev) => [...prev, makeColor(preset.r, preset.g, preset.b, 25, true)]);
+  }
+
+  function addCustomColor() {
+    setTargetColors((prev) => [...prev, makeColor(128, 128, 128, 25, true)]);
+  }
+
+  function updateColor(id: string, patch: Partial<TargetColor>) {
+    setTargetColors((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+  }
+
+  function removeColor(id: string) {
+    setTargetColors((prev) => prev.filter((c) => c.id !== id));
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-5 py-10 md:py-16">
       <header className="mb-10">
         <p className="label-mono">Visual variation generator</p>
         <h1 className="mt-2 text-4xl font-bold md:text-5xl">GIF Variation Studio</h1>
         <p className="mt-3 max-w-2xl text-muted-foreground">
-          Upload a single GIF to generate multiple visual variations. Each
-          variation preserves the original's composition, movement timing, and
-          character while introducing controlled differences through pixel
-          displacement and color transformation.
+          Upload a single GIF to generate multiple visual variations.
         </p>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <section className="space-y-6">
           <div
             className="panel flex flex-col items-center justify-center gap-3 border-dashed p-10 text-center transition-colors hover:border-primary/60"
@@ -227,22 +247,16 @@ function GifVariationStudio() {
                     src={originalInfo.thumb}
                     alt="Original GIF preview"
                     className="rounded-md border border-border"
-                    style={{
-                      width: originalInfo.width > 320 ? 320 : originalInfo.width,
-                    }}
+                    style={{ width: originalInfo.width > 320 ? 320 : originalInfo.width }}
                   />
                 )}
                 <dl className="grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-xs text-muted-foreground">
                   <div>Size</div>
-                  <div className="text-foreground">
-                    {originalInfo.width}×{originalInfo.height}px
-                  </div>
+                  <div className="text-foreground">{originalInfo.width}×{originalInfo.height}px</div>
                   <div>Frames</div>
                   <div className="text-foreground">{originalInfo.frames}</div>
                   <div>Duration</div>
-                  <div className="text-foreground">
-                    {(originalInfo.duration / 1000).toFixed(2)}s
-                  </div>
+                  <div className="text-foreground">{(originalInfo.duration / 1000).toFixed(2)}s</div>
                   <div>FPS</div>
                   <div className="text-foreground">{originalInfo.fps}</div>
                 </dl>
@@ -292,19 +306,14 @@ function GifVariationStudio() {
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full bg-accent transition-all"
-                  style={{ width: `${progress * 100}%` }}
-                />
+                <div className="h-full bg-accent transition-all" style={{ width: `${progress * 100}%` }} />
               </div>
             </div>
           )}
 
           {results.length > 0 && (
             <div>
-              <p className="label-mono mb-3">
-                Generated Variations · {results.length}
-              </p>
+              <p className="label-mono mb-3">Generated Variations · {results.length}</p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                 {results.map((result) => (
                   <a
@@ -320,9 +329,7 @@ function GifVariationStudio() {
                       loading="lazy"
                     />
                     <div className="flex items-center justify-between px-2 py-1.5">
-                      <span className="label-mono text-[0.6rem]">
-                        {result.id.split("-")[0]}
-                      </span>
+                      <span className="label-mono text-[0.6rem]">{result.id.split("-")[0]}</span>
                       <span className="font-mono text-[0.6rem] text-muted-foreground">
                         {Math.round(result.bytes / 1024)}kb
                       </span>
@@ -348,15 +355,10 @@ function GifVariationStudio() {
               <div className="space-y-3">
                 <label className="block">
                   <div className="flex items-baseline justify-between">
-                    <span className="label-mono">
-                      Similarity · {similarity}%
-                    </span>
+                    <span className="label-mono">Similarity · {similarity}%</span>
                   </div>
                   <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
+                    type="range" min={0} max={100} step={5}
                     value={similarity}
                     onChange={(e) => setSimilarity(Number(e.target.value))}
                     className="mt-2 w-full accent-primary"
@@ -368,34 +370,14 @@ function GifVariationStudio() {
                 </label>
 
                 {([
-                  [
-                    "Geometry / shape",
-                    geometry,
-                    setGeometry,
-                    "Rotation, scale, skew, swirl, ripple — changes form, not just color",
-                  ],
-                  [
-                    "Color shift",
-                    color,
-                    setColor,
-                    "Hue, saturation, lightness and contrast drift",
-                  ],
-                  [
-                    "Organic flow",
-                    flow,
-                    setFlow,
-                    "Perlin noise displacement for soft, hand-redrawn edges",
-                  ],
+                  ["Geometry / shape", geometry, setGeometry, "Rotation, scale, skew, swirl, ripple"],
+                  ["Color shift", color, setColor, "Hue, saturation, lightness and contrast drift"],
+                  ["Organic flow", flow, setFlow, "Perlin noise displacement for soft edges"],
                 ] as const).map(([label, value, setter, hint]) => (
                   <label key={label} className="block">
-                    <span className="label-mono">
-                      {label} · {value}%
-                    </span>
+                    <span className="label-mono">{label} · {value}%</span>
                     <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
+                      type="range" min={0} max={100} step={5}
                       value={value}
                       onChange={(e) => setter(Number(e.target.value))}
                       className="mt-2 w-full accent-accent"
@@ -407,86 +389,161 @@ function GifVariationStudio() {
 
                 {/* ===== COLOR SEGMENTATION ===== */}
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">
-                    🎨 Сегментация по цвету
-                  </h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🎨 Сегментация по цвету</h3>
 
                   <label className="block">
-                    <span className="label-mono">
-                      Сила перемещения · {colorSegmentation}%
-                    </span>
+                    <span className="label-mono">Сила перемещения · {colorSegmentation}%</span>
                     <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
+                      type="range" min={0} max={100} step={5}
                       value={colorSegmentation}
-                      onChange={(e) =>
-                        setColorSegmentation(Number(e.target.value))
-                      }
+                      onChange={(e) => setColorSegmentation(Number(e.target.value))}
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Перемещает цветовые области как единое целое (линии,
-                      силуэты)
-                    </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">
-                      Количество цветов · {numColors}
-                    </span>
+                    <span className="label-mono">Количество цветов (авто) · {numColors}</span>
                     <input
-                      type="range"
-                      min={4}
-                      max={32}
-                      step={1}
+                      type="range" min={4} max={32} step={1}
                       value={numColors}
                       onChange={(e) => setNumColors(Number(e.target.value))}
                       className="mt-2 w-full accent-primary"
-                      disabled={stage === "generating"}
+                      disabled={stage === "generating" || targetColorsMode}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      4-8 = крупные объекты (луна, линии), 12-16 = средняя детализация, 20-32 = мелкие детали
+                      Работает, когда "Выбранные цвета" выключены
                     </p>
                   </label>
                 </div>
 
+                {/* ===== TARGET COLORS ===== */}
+                <div className="border-t border-border pt-3">
+                  <label className="flex items-center justify-between">
+                    <span className="label-mono text-sm font-semibold">🎯 Выбранные цвета</span>
+                    <input
+                      type="checkbox"
+                      checked={targetColorsMode}
+                      onChange={(e) => setTargetColorsMode(e.target.checked)}
+                      disabled={stage === "generating"}
+                      className="accent-primary"
+                    />
+                  </label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Перемещать только указанные цвета (красный, синий и т.д.)
+                  </p>
+
+                  {targetColorsMode && (
+                    <div className="mt-3 space-y-2">
+                      {/* Preset colors */}
+                      <div>
+                        <p className="label-mono text-xs mb-2">Быстрый выбор:</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {PRESET_COLORS.map((preset) => (
+                            <button
+                              key={preset.name}
+                              onClick={() => addPresetColor(preset)}
+                              disabled={stage === "generating"}
+                              title={`Добавить: ${preset.name}`}
+                              className="h-7 w-7 rounded-md border border-border transition-transform hover:scale-110 disabled:opacity-40"
+                              style={{ backgroundColor: rgbToHex(preset.r, preset.g, preset.b) }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Selected colors list */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="label-mono text-xs">Выбрано: {targetColors.length}</p>
+                          <button
+                            onClick={addCustomColor}
+                            disabled={stage === "generating"}
+                            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-40"
+                          >
+                            + Добавить свой
+                          </button>
+                        </div>
+
+                        {targetColors.map((c) => (
+                          <div
+                            key={c.id}
+                            className="flex items-center gap-2 rounded-md border border-border bg-surface-2 p-2"
+                          >
+                            <input
+                              type="color"
+                              value={rgbToHex(c.r, c.g, c.b)}
+                              onChange={(e) => {
+                                const rgb = hexToRgb(e.target.value);
+                                updateColor(c.id, rgb);
+                              }}
+                              disabled={stage === "generating"}
+                              className="h-8 w-8 cursor-pointer rounded border border-border"
+                            />
+                            <input
+                              type="checkbox"
+                              checked={c.enabled}
+                              onChange={(e) => updateColor(c.id, { enabled: e.target.checked })}
+                              disabled={stage === "generating"}
+                              className="accent-primary"
+                              title="Включить/выключить"
+                            />
+                            <div className="flex-1">
+                              <input
+                                type="range"
+                                min={5}
+                                max={80}
+                                step={5}
+                                value={c.tolerance}
+                                onChange={(e) => updateColor(c.id, { tolerance: Number(e.target.value) })}
+                                className="w-full accent-accent"
+                                disabled={stage === "generating"}
+                                title={`Допуск: ${c.tolerance}%`}
+                              />
+                              <p className="text-[0.65rem] text-muted-foreground">
+                                Допуск: {c.tolerance}%
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => removeColor(c.id)}
+                              disabled={stage === "generating"}
+                              className="rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-40"
+                              title="Удалить"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+
+                        {targetColors.length === 0 && (
+                          <p className="text-xs text-muted-foreground italic">
+                            Нажми на цветные квадратики выше, чтобы добавить цвета
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* ===== REASSEMBLY ===== */}
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">
-                    🧱 Пересборка (Reassembly)
-                  </h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка (Reassembly)</h3>
 
                   <label className="block">
-                    <span className="label-mono">
-                      Сила · {reassembly}%
-                    </span>
+                    <span className="label-mono">Сила · {reassembly}%</span>
                     <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
+                      type="range" min={0} max={100} step={5}
                       value={reassembly}
                       onChange={(e) => setReassembly(Number(e.target.value))}
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Разбивает на блоки и перемешивает (0 = выключено)
-                    </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">
-                      Размер блока · {blockSize}px
-                    </span>
+                    <span className="label-mono">Размер блока · {blockSize}px</span>
                     <input
-                      type="range"
-                      min={1}
-                      max={128}
-                      step={1}
+                      type="range" min={1} max={64} step={1}
                       value={blockSize}
                       onChange={(e) => setBlockSize(Number(e.target.value))}
                       className="mt-2 w-full accent-accent"
@@ -498,9 +555,7 @@ function GifVariationStudio() {
                     <span className="label-mono">Режим</span>
                     <select
                       value={reassemblyMode}
-                      onChange={(e) =>
-                        setReassemblyMode(e.target.value as ReassemblyMode)
-                      }
+                      onChange={(e) => setReassemblyMode(e.target.value as ReassemblyMode)}
                       disabled={stage === "generating"}
                       className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
                     >
@@ -512,14 +567,9 @@ function GifVariationStudio() {
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">
-                      Силуэт · {silhouette}%
-                    </span>
+                    <span className="label-mono">Силуэт · {silhouette}%</span>
                     <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
+                      type="range" min={0} max={100} step={5}
                       value={silhouette}
                       onChange={(e) => setSilhouette(Number(e.target.value))}
                       className="mt-2 w-full accent-primary"
@@ -544,47 +594,13 @@ function GifVariationStudio() {
                     <span className="label-mono">Variations · {count}</span>
                   </div>
                   <input
-                    type="range"
-                    min={1}
-                    max={100}
-                    step={1}
+                    type="range" min={1} max={100} step={1}
                     value={count}
                     onChange={(e) => setCount(Number(e.target.value))}
                     className="mt-2 w-full accent-primary"
                     disabled={stage === "generating"}
                   />
                 </label>
-              </div>
-
-              <div className="border-t border-border pt-4">
-                <h3 className="label-mono mb-2">How It Works</h3>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex gap-2">
-                    <span className="text-primary">1.</span>
-                    <span>
-                      Сегментация по цвету: области одного цвета перемещаются
-                      целиком
-                    </span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">2.</span>
-                    <span>
-                      Perlin noise displacement для мягких "живых" краёв
-                    </span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">3.</span>
-                    <span>
-                      Временная модуляция для плавных циклов
-                    </span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">4.</span>
-                    <span>
-                      HSL-трансформация цвета для смены палитры
-                    </span>
-                  </li>
-                </ul>
               </div>
             </>
           )}

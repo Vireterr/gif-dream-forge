@@ -368,7 +368,40 @@ function GifVariationStudio() {
                     {getSimilarityDescription(similarity)}
                   </p>
                 </label>
-                
+
+                {([
+                  ["Geometry / shape", geometry, setGeometry, "Rotation, scale, skew, swirl, ripple — changes form, not just color"],
+                  ["Color shift", color, setColor, "Hue, saturation, lightness and contrast drift"],
+                  ["Organic flow", flow, setFlow, "Perlin noise displacement for soft, hand-redrawn edges"],
+                ] as const).map(([label, value, setter, hint]) => (
+                  <label key={label} className="block">
+                    <span className="label-mono">{label} · {value}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={value}
+                      onChange={(e) => setter(Number(e.target.value))}
+                      className="mt-2 w-full accent-accent"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
+                  </label>
+                ))}
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={mirror}
+                    onChange={(e) => setMirror(e.target.checked)}
+                    disabled={stage === "generating"}
+                    className="accent-primary"
+                  />
+                  <span>Allow mirrored variations</span>
+                </label>
+
+
                 <label className="block">
                   <div className="flex items-baseline justify-between">
                     <span className="label-mono">Variations · {count}</span>

@@ -50,17 +50,17 @@ function GifVariationStudio() {
     duration: number; fps: number; thumb?: string;
   } | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
-  const [similarity, setSimilarity] = useState(75);
-  const [geometry, setGeometry] = useState(65);
-  const [color, setColor] = useState(55);
-  const [flow, setFlow] = useState(60);
-  const [reassembly, setReassembly] = useState(0);
-  const [blockSize, setBlockSize] = useState(8);
-  const [silhouette, setSilhouette] = useState(70);
-  const [colorSegmentation, setColorSegmentation] = useState(0);
+  const [similarity, setSimilarity] = useState(50);
+  const [geometry, setGeometry] = useState(80);
+  const [color, setColor] = useState(80);
+  const [flow, setFlow] = useState(70);
+  const [reassembly, setReassembly] = useState(70);
+  const [blockSize, setBlockSize] = useState(50);
+  const [silhouette, setSilhouette] = useState(50);
+  const [colorSegmentation, setColorSegmentation] = useState(80);
   const [targetColorsMode, setTargetColorsMode] = useState(true);
   const [targetColors, setTargetColors] = useState<TargetColor[]>([
-    makeColor(220, 20, 60, 25, true),
+    makeColor(220, 20, 60, 40, true),
   ]);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
@@ -150,10 +150,18 @@ function GifVariationStudio() {
       const variationResults = await generateVariations(
         file,
         {
-          similarity, count, geometry, color, flow, mirror,
-          reassembly, blockSize, silhouette,
+          similarity,
+          count,
+          geometry,
+          color,
+          flow,
+          mirror,
+          reassembly,
+          blockSize,
+          silhouette,
           colorSegmentation,
-          targetColorsMode, targetColors,
+          targetColorsMode,
+          targetColors,
         },
         (current, total) => setProgress(current / total),
         () => cancelRef.current
@@ -176,11 +184,11 @@ function GifVariationStudio() {
   }
 
   function addPresetColor(preset: typeof PRESET_COLORS[number]) {
-    setTargetColors((prev) => [...prev, makeColor(preset.r, preset.g, preset.b, 25, true)]);
+    setTargetColors((prev) => [...prev, makeColor(preset.r, preset.g, preset.b, 40, true)]);
   }
 
   function addCustomColor() {
-    setTargetColors((prev) => [...prev, makeColor(128, 128, 128, 25, true)]);
+    setTargetColors((prev) => [...prev, makeColor(128, 128, 128, 40, true)]);
   }
 
   function updateColor(id: string, patch: Partial<TargetColor>) {
@@ -367,7 +375,7 @@ function GifVariationStudio() {
                 </label>
 
                 {([
-                  ["Geometry / shape", geometry, setGeometry, "Rotation, scale, skew, swirl, ripple"],
+                  ["Geometry / shape", geometry, setGeometry, "Random rotation, scale, skew, swirl"],
                   ["Color shift", color, setColor, "Hue, saturation, lightness and contrast drift"],
                   ["Organic flow", flow, setFlow, "Perlin noise displacement"],
                 ] as const).map(([label, value, setter, hint]) => (
@@ -384,7 +392,6 @@ function GifVariationStudio() {
                   </label>
                 ))}
 
-                {/* ===== COLOR COLLAGE ===== */}
                 <div className="border-t border-border pt-3">
                   <h3 className="label-mono mb-3 text-sm font-semibold">🎨 Коллаж по цвету</h3>
 
@@ -500,7 +507,6 @@ function GifVariationStudio() {
                   )}
                 </div>
 
-                {/* ===== REASSEMBLY ===== */}
                 <div className="border-t border-border pt-3">
                   <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка</h3>
 
@@ -516,7 +522,7 @@ function GifVariationStudio() {
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">Размер блока · {blockSize}px</span>
+                    <span className="label-mono">Размер блока · {blockSize}% от GIF</span>
                     <input
                       type="range" min={0} max={100} step={1}
                       value={blockSize}
@@ -525,7 +531,7 @@ function GifVariationStudio() {
                       disabled={stage === "generating"}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      0 = выключено, 1-100px
+                      0% = выкл, 50% = блоки в половину GIF, 100% = весь GIF одним блоком
                     </p>
                   </label>
 
@@ -538,6 +544,9 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-primary"
                       disabled={stage === "generating"}
                     />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Защищает контуры объектов от перемешивания
+                    </p>
                   </label>
                 </div>
 

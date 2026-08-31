@@ -9,8 +9,12 @@ import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
 import { applyColorCollage } from './color-segmentation';
 
-function stageSimilarity(similarity: number, strength: number): number {
-  return 100 - (100 - similarity) * (strength / 100);
+/**
+ * Similarity — главный множитель для ВСЕХ эффектов.
+ * Реальная сила = (сила_ползунка / 100) × (similarity / 100) × 100
+ */
+function applySimilarity(effectStrength: number, similarity: number): number {
+  return (effectStrength / 100) * (similarity / 100) * 100;
 }
 
 export async function generateVariations(
@@ -20,14 +24,17 @@ export async function generateVariations(
   shouldCancel?: () => boolean
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
-  const geometryStrength = config.geometry ?? 0;
-  const colorStrength = config.color ?? 0;
-  const flowStrength = config.flow ?? 0;
+  
+  // Similarity применяется ко ВСЕМ эффектам как главный множитель
+  const geometryStrength = applySimilarity(config.geometry ?? 0, similarity);
+  const colorStrength = applySimilarity(config.color ?? 0, similarity);
+  const flowStrength = applySimilarity(config.flow ?? 0, similarity);
+  const reassemblyStrength = applySimilarity(config.reassembly ?? 0, similarity);
+  const colorSegStrength = applySimilarity(config.colorSegmentation ?? 0, similarity);
+  const silhouetteStrength = applySimilarity(config.silhouette ?? 0, similarity);
+  
   const allowMirror = config.mirror ?? false;
-  const silhouetteStrength = config.silhouette ?? 0;
-  const reassemblyStrength = config.reassembly ?? 0;
   const blockSize = config.blockSize ?? 32;
-  const colorSegStrength = config.colorSegmentation ?? 0;
   const targetColorsMode = config.targetColorsMode ?? false;
   const targetColors = config.targetColors ?? [];
 
@@ -53,27 +60,32 @@ export async function generateVariations(
 
     const variationSeed = Math.floor(Math.random() * 1e9) + v * 2654435761;
 
-    // 🆕 FIX: Если strength=0, эффект не применяется вообще
-    const flowSim = flowStrength > 0 ? stageSimilarity(similarity, flowStrength) : 100;
-    const colorSim = colorStrength > 0 ? stageSimilarity(similarity, colorStrength) : 100;
-
-    // 🆕 FIX: Displacement только если flow > 0
+    // Displacement только если flow > 0
     const displacementField = flowStrength > 0
-      ? generateDisplacementField(width, height, flowSim, variationSeed)
+      ? generateDisplacementField(width, height, flowStrength, variationSeed)
       : null;
 
-    // 🆕 FIX: Color transform только если color > 0
+    // Color transform только если color > 0
     const colorTransform = colorStrength > 0
-      ? generateColorTransform(colorSim, variationSeed)
+      ? generateColorTransform(colorStrength, variationSeed)
       : null;
 
-    // 🆕 FIX: Geometry только если geometry > 0
+    // Geometry только если geometry > 0
     const geometryTransform = geometryStrength > 0
       ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
       : null;
 
+    // Reassembly только если включено (с передачей silhouette)
     const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
-      ? generateReassemblyMap(width, height, blockSize, reassemblyStrength, variationSeed)
+      ? generateReassemblyMap(
+          width, 
+          height, 
+          blockSize, 
+          reassemblyStrength, 
+          variationSeed,
+          silhouetteMask,
+          silhouetteStrength
+        )
       : null;
 
     const enabledTargets = targetColorsMode
@@ -86,7 +98,7 @@ export async function generateVariations(
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color collage (только если включено)
+      // STEP 1: Color collage
       if (colorSegStrength > 0 && enabledTargets.length > 0) {
         const collageRgba = applyColorCollage(
           currentFrame, colorSegStrength, variationSeed, enabledTargets
@@ -99,7 +111,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 2: Reassembly (только если включено)
+      // STEP 2: Reassembly
       if (reassemblyMap) {
         const reassembledRgba = applyReassemblyToFrame(
           currentFrame, reassemblyMap, silhouetteMask, silhouetteStrength
@@ -112,7 +124,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 3: Geometry (только если включено)
+      // STEP 3: Geometry
       if (geometryTransform) {
         const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
         currentFrame = {
@@ -123,7 +135,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 4: Displacement (только если включено)
+      // STEP 4: Displacement
       if (displacementField) {
         const modulatedField = applyTemporalConsistency(displacementField, f, totalFrames, 0);
         const warpedRgba = warpFrame(currentFrame, modulatedField, motionMask?.data);
@@ -135,7 +147,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 5: Color transform (только если включено)
+      // STEP 5: Color transform
       if (colorTransform) {
         const coloredRgba = applyColorTransformToFrame(currentFrame, colorTransform);
         currentFrame = {

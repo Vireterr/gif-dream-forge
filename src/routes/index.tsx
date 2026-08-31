@@ -139,6 +139,7 @@ function GifVariationStudio() {
   }
 
   async function generate() {
+    console.log('🔧 PARAMS:', { reassembly, blockSize, silhouette, colorSegmentation, targetColorsMode, targetColors: targetColors.length })
     if (!file || !originalInfo) return;
     cancelRef.current = false;
     setStage("generating");

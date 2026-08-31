@@ -7,7 +7,7 @@ import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
 import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
-import { moveColorRegions } from './color-segmentation';
+import { moveColorRegions, moveTargetColors } from './color-segmentation';
 
 function stageSimilarity(similarity: number, strength: number): number {
   return 100 - (100 - similarity) * (strength / 100);
@@ -30,6 +30,8 @@ export async function generateVariations(
   const reassemblyMode = config.reassemblyMode ?? 'scatter';
   const colorSegStrength = config.colorSegmentation ?? 0;
   const numColors = config.numColors ?? 12;
+  const targetColorsMode = config.targetColorsMode ?? false;
+  const targetColors = config.targetColors ?? [];
 
   const originalFrames = await decodeGif(file);
 
@@ -71,23 +73,40 @@ export async function generateVariations(
     const temporalAmplitude = ((100 - flowSim) / 100) * 5;
     const variationFrames: Frame[] = [];
 
+    // Prepare enabled target colors
+    const enabledTargets = targetColorsMode
+      ? targetColors.filter((t) => t.enabled)
+      : [];
+
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color segmentation — SAME seed for all frames!
+      // STEP 1: Color segmentation
       if (colorSegStrength > 0) {
-        const segRgba = moveColorRegions(
-          currentFrame,
-          colorSegStrength,
-          variationSeed,  // ← ОДИН seed для всех кадров
-          numColors
-        );
+        let segRgba: Uint8ClampedArray;
+
+        if (targetColorsMode && enabledTargets.length > 0) {
+          segRgba = moveTargetColors(
+            currentFrame,
+            colorSegStrength,
+            variationSeed,
+            enabledTargets
+          );
+        } else {
+          segRgba = moveColorRegions(
+            currentFrame,
+            colorSegStrength,
+            variationSeed,
+            numColors
+          );
+        }
+
         currentFrame = {
           rgba: segRgba,
           delay: currentFrame.delay,
           width: currentFrame.width,
-          height: currentFrame.height
+          height: currentFrame.height,
         };
       }
 
@@ -100,7 +119,7 @@ export async function generateVariations(
           rgba: reassembledRgba,
           delay: currentFrame.delay,
           width: currentFrame.width,
-          height: currentFrame.height
+          height: currentFrame.height,
         };
       }
 
@@ -110,7 +129,7 @@ export async function generateVariations(
         rgba: geoRgba,
         delay: currentFrame.delay,
         width: currentFrame.width,
-        height: currentFrame.height
+        height: currentFrame.height,
       };
 
       // STEP 4: Displacement
@@ -122,7 +141,7 @@ export async function generateVariations(
         rgba: warpedRgba,
         delay: geoFrame.delay,
         width: geoFrame.width,
-        height: geoFrame.height
+        height: geoFrame.height,
       };
 
       // STEP 5: Color transform
@@ -132,19 +151,19 @@ export async function generateVariations(
         rgba: coloredRgba,
         delay: warpedFrame.delay,
         width: warpedFrame.width,
-        height: warpedFrame.height
+        height: warpedFrame.height,
       });
 
-      if (f % 4 === 3) await new Promise(r => setTimeout(r, 0));
+      if (f % 4 === 3) await new Promise((r) => setTimeout(r, 0));
     }
 
     const { url, bytes } = await encodeVariation(variationFrames);
     results.push({
       id: `v${v + 1}-${variationSeed}`,
-      url, bytes, seed: variationSeed
+      url, bytes, seed: variationSeed,
     });
     onProgress?.(v + 1, count);
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
   }
 
   return results;
@@ -174,14 +193,14 @@ export async function previewVariation(
       rgba: warpedRgba,
       delay: originalFrame.delay,
       width: originalFrame.width,
-      height: originalFrame.height
+      height: originalFrame.height,
     };
     const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
     previewFrames.push({
       rgba: coloredRgba,
       delay: warpedFrame.delay,
       width: warpedFrame.width,
-      height: warpedFrame.height
+      height: warpedFrame.height,
     });
   }
 

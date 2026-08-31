@@ -141,7 +141,8 @@ function GifVariationStudio() {
     try {
       const variationResults = await generateVariations(
         file,
-        { similarity, count },
+        { similarity, count, geometry, color, flow, mirror },
+
         (current, total) => {
           setProgress(current / total);
         },

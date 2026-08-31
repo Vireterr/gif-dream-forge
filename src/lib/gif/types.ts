@@ -6,15 +6,16 @@ export interface Frame {
 }
 
 export interface VariationConfig {
-  similarity: number; // 0-100
-  count: number;      // 1-100
-  geometry?: number;  // 0-100 shape/geometry strength
-  color?: number;     // 0-100 color shift strength
-  flow?: number;      // 0-100 noise displacement strength
-  mirror?: boolean;   // allow horizontal mirroring
-  silhouette?: number;   // 0-100 contour preservation
-  reassembly?: number;   // 0-100 block/pixel rebuild strength
-  blockSize?: number;    // tile size in px (1 = near pixel level)
+  similarity: number;
+  count: number;
+  geometry?: number;
+  color?: number;
+  flow?: number;
+  mirror?: boolean;
+  silhouette?: number;
+  reassembly?: number;
+  blockSize?: number;
+  reassemblyMode?: 'scatter' | 'flow' | 'swap' | 'vortex';
 }
 
 export interface ReassemblyMap {
@@ -25,7 +26,6 @@ export interface ReassemblyMap {
   offsetY: Int16Array;
   flags: Uint8Array;
 }
-
 
 export interface GeometryTransform {
   rotation: number;
@@ -44,7 +44,6 @@ export interface GeometryTransform {
   mirror: boolean;
   breathing: number;
 }
-
 
 export interface VariationResult {
   id: string;
@@ -73,9 +72,6 @@ export interface MotionMask {
   height: number;
 }
 
-/**
- * GIF parsing types
- */
 export interface GifDescriptor {
   width: number;
   height: number;

@@ -1,9 +1,10 @@
 /**
- * Color-based segmentation with MULTIPLE TARGET COLORS.
+ * Color-based segmentation with TARGET COLORS and PIXELATION.
  *
- * Modes:
- * 1. Move ALL color regions (palette-based)
- * 2. Move ONLY pixels of specific target colors (multiple colors supported)
+ * Pipeline:
+ * 1. Pixelate the frame (group pixels into blocks of N×N)
+ * 2. Find pixels matching target colors
+ * 3. Move entire color regions as solid blocky shapes
  */
 
 import type { Frame, TargetColor } from './types';
@@ -77,6 +78,60 @@ function buildPalette(
   }));
 }
 
+/**
+ * Pixelate frame: group pixels into blockSize×blockSize blocks,
+ * each block gets the average color of its pixels.
+ */
+function pixelateFrame(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  blockSize: number
+): Uint8ClampedArray {
+  if (blockSize <= 1) return new Uint8ClampedArray(rgba);
+
+  const out = new Uint8ClampedArray(rgba.length);
+  const size = Math.max(1, Math.round(blockSize));
+
+  for (let by = 0; by < height; by += size) {
+    for (let bx = 0; bx < width; bx += size) {
+      const x1 = Math.min(width, bx + size);
+      const y1 = Math.min(height, by + size);
+
+      // Calculate average color of this block
+      let sumR = 0, sumG = 0, sumB = 0, sumA = 0, n = 0;
+      for (let y = by; y < y1; y++) {
+        for (let x = bx; x < x1; x++) {
+          const i = (y * width + x) * 4;
+          sumR += rgba[i];
+          sumG += rgba[i + 1];
+          sumB += rgba[i + 2];
+          sumA += rgba[i + 3];
+          n++;
+        }
+      }
+
+      const avgR = Math.round(sumR / n);
+      const avgG = Math.round(sumG / n);
+      const avgB = Math.round(sumB / n);
+      const avgA = Math.round(sumA / n);
+
+      // Fill entire block with average color
+      for (let y = by; y < y1; y++) {
+        for (let x = bx; x < x1; x++) {
+          const i = (y * width + x) * 4;
+          out[i] = avgR;
+          out[i + 1] = avgG;
+          out[i + 2] = avgB;
+          out[i + 3] = avgA;
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 function matchesTargetColor(
   r: number,
   g: number,
@@ -94,13 +149,14 @@ function matchesTargetColor(
 
 /**
  * Move ONLY pixels matching ANY of the target colors.
- * Each target color moves as ONE solid shape in its own direction.
+ * Each target color moves as ONE solid blocky shape.
  */
 export function moveTargetColors(
   frame: Frame,
   strength: number,
   seed: number,
-  targets: TargetColor[]
+  targets: TargetColor[],
+  pixelSize: number = 1
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const k = Math.max(0, Math.min(100, strength)) / 100;
@@ -108,20 +164,25 @@ export function moveTargetColors(
 
   if (k <= 0 || targets.length === 0) return new Uint8ClampedArray(src);
 
+  // 🆕 STEP 0: Pixelate first (if pixelSize > 1)
+  const workRgba = pixelSize > 1
+    ? pixelateFrame(src, width, height, pixelSize)
+    : src;
+
   // 1. Group pixels by which target color they match
   const groups: number[][] = targets.map(() => []);
   for (let i = 0; i < totalPixels; i++) {
     const pi = i * 4;
-    const r = src[pi];
-    const g = src[pi + 1];
-    const b = src[pi + 2];
-    const a = src[pi + 3];
+    const r = workRgba[pi];
+    const g = workRgba[pi + 1];
+    const b = workRgba[pi + 2];
+    const a = workRgba[pi + 3];
     if (a < 30) continue;
 
     for (let t = 0; t < targets.length; t++) {
       if (matchesTargetColor(r, g, b, targets[t])) {
         groups[t].push(i);
-        break; // pixel belongs to first matching target only
+        break;
       }
     }
   }
@@ -145,7 +206,7 @@ export function moveTargetColors(
   const out = new Uint8ClampedArray(src);
   const written = new Uint8Array(totalPixels);
 
-  // Clear old positions of all target pixels
+  // Clear old positions
   for (const group of groups) {
     for (const idx of group) {
       const di = idx * 4;
@@ -156,7 +217,7 @@ export function moveTargetColors(
     }
   }
 
-  // Place each group at its new position (larger groups first)
+  // Place each group at new position
   const sortedIndices = groups
     .map((g, i) => i)
     .sort((a, b) => groups[b].length - groups[a].length);
@@ -175,10 +236,10 @@ export function moveTargetColors(
       if (!written[ni]) {
         const si = idx * 4;
         const di = ni * 4;
-        out[di] = src[si];
-        out[di + 1] = src[si + 1];
-        out[di + 2] = src[si + 2];
-        out[di + 3] = src[si + 3];
+        out[di] = workRgba[si];
+        out[di + 1] = workRgba[si + 1];
+        out[di + 2] = workRgba[si + 2];
+        out[di + 3] = workRgba[si + 3];
         written[ni] = 1;
       }
     }
@@ -188,13 +249,14 @@ export function moveTargetColors(
 }
 
 /**
- * Move ALL color regions (palette-based).
+ * Move ALL color regions (palette-based) with optional pixelation.
  */
 export function moveColorRegions(
   frame: Frame,
   strength: number,
   seed: number,
-  numColors: number = 12
+  numColors: number = 12,
+  pixelSize: number = 1
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const k = Math.max(0, Math.min(100, strength)) / 100;
@@ -202,16 +264,21 @@ export function moveColorRegions(
 
   if (k <= 0) return new Uint8ClampedArray(src);
 
-  const palette = buildPalette(src, numColors);
+  // 🆕 Pixelate first
+  const workRgba = pixelSize > 1
+    ? pixelateFrame(src, width, height, pixelSize)
+    : src;
+
+  const palette = buildPalette(workRgba, numColors);
   if (palette.length === 0) return new Uint8ClampedArray(src);
 
   const assignments = new Int16Array(totalPixels);
   for (let i = 0; i < totalPixels; i++) {
     const pi = i * 4;
-    const r = src[pi];
-    const g = src[pi + 1];
-    const b = src[pi + 2];
-    const a = src[pi + 3];
+    const r = workRgba[pi];
+    const g = workRgba[pi + 1];
+    const b = workRgba[pi + 2];
+    const a = workRgba[pi + 3];
 
     if (a < 30) {
       assignments[i] = -1;
@@ -275,10 +342,10 @@ export function moveColorRegions(
       if (!written[ni]) {
         const si = idx * 4;
         const di = ni * 4;
-        out[di] = src[si];
-        out[di + 1] = src[si + 1];
-        out[di + 2] = src[si + 2];
-        out[di + 3] = src[si + 3];
+        out[di] = workRgba[si];
+        out[di + 1] = workRgba[si + 1];
+        out[di + 2] = workRgba[si + 2];
+        out[di + 3] = workRgba[si + 3];
         written[ni] = 1;
       }
     }

@@ -7,7 +7,7 @@ import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
 import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
-import { moveColorRegions, moveTargetColors } from './color-segmentation';
+import { applyColorCollage } from './color-segmentation';
 
 function stageSimilarity(similarity: number, strength: number): number {
   return 100 - (100 - similarity) * (strength / 100);
@@ -27,12 +27,9 @@ export async function generateVariations(
   const silhouetteStrength = config.silhouette ?? 50;
   const reassemblyStrength = config.reassembly ?? 0;
   const blockSize = config.blockSize ?? 8;
-  const reassemblyMode = config.reassemblyMode ?? 'scatter';
   const colorSegStrength = config.colorSegmentation ?? 0;
-  const numColors = config.numColors ?? 12;
   const targetColorsMode = config.targetColorsMode ?? false;
   const targetColors = config.targetColors ?? [];
-  const pixelSize = config.pixelSize ?? 1;
 
   const originalFrames = await decodeGif(file);
 
@@ -67,46 +64,30 @@ export async function generateVariations(
       similarity, geometryStrength, variationSeed, allowMirror
     );
 
-    const reassemblyMap = reassemblyStrength > 0
-      ? generateReassemblyMap(width, height, blockSize, reassemblyStrength, variationSeed, reassemblyMode)
+    const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
+      ? generateReassemblyMap(width, height, blockSize, reassemblyStrength, variationSeed)
       : null;
 
-    const temporalAmplitude = ((100 - flowSim) / 100) * 5;
-    const variationFrames: Frame[] = [];
-
-    // Prepare enabled target colors
     const enabledTargets = targetColorsMode
       ? targetColors.filter((t) => t.enabled)
       : [];
+
+    const variationFrames: Frame[] = [];
 
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color segmentation (with pixelation)
-      if (colorSegStrength > 0) {
-        let segRgba: Uint8ClampedArray;
-
-        if (targetColorsMode && enabledTargets.length > 0) {
-          segRgba = moveTargetColors(
-            currentFrame,
-            colorSegStrength,
-            variationSeed,
-            enabledTargets,
-            pixelSize
-          );
-        } else {
-          segRgba = moveColorRegions(
-            currentFrame,
-            colorSegStrength,
-            variationSeed,
-            numColors,
-            pixelSize
-          );
-        }
-
+      // STEP 1: Color collage
+      if (colorSegStrength > 0 && enabledTargets.length > 0) {
+        const collageRgba = applyColorCollage(
+          currentFrame,
+          colorSegStrength,
+          variationSeed,
+          enabledTargets
+        );
         currentFrame = {
-          rgba: segRgba,
+          rgba: collageRgba,
           delay: currentFrame.delay,
           width: currentFrame.width,
           height: currentFrame.height,
@@ -137,7 +118,7 @@ export async function generateVariations(
 
       // STEP 4: Displacement
       const modulatedField = applyTemporalConsistency(
-        displacementField, f, totalFrames, temporalAmplitude
+        displacementField, f, totalFrames, 0
       );
       const warpedRgba = warpFrame(geoFrame, modulatedField, motionMask?.data);
       const warpedFrame: Frame = {
@@ -182,16 +163,12 @@ export async function previewVariation(
   const totalFrames = originalFrames.length;
   const displacementField = generateDisplacementField(width, height, similarity, seed);
   const colorTransform = generateColorTransform(similarity, seed);
-  const temporalAmplitude = ((100 - similarity) / 100) * 5;
   const previewFrameCount = Math.min(8, totalFrames);
   const previewFrames: Frame[] = [];
 
   for (let f = 0; f < previewFrameCount; f++) {
     const originalFrame = originalFrames[f]!;
-    const modulatedField = applyTemporalConsistency(
-      displacementField, f, totalFrames, temporalAmplitude
-    );
-    const warpedRgba = warpFrame(originalFrame, modulatedField);
+    const warpedRgba = warpFrame(originalFrame, displacementField);
     const warpedFrame: Frame = {
       rgba: warpedRgba,
       delay: originalFrame.delay,

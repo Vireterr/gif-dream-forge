@@ -9,9 +9,6 @@ import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
 import { applyColorCollage } from './color-segmentation';
 
-/**
- * Similarity — главный множитель для ВСЕХ эффектов.
- */
 function applySimilarity(effectStrength: number, similarity: number): number {
   return (effectStrength / 100) * (similarity / 100) * 100;
 }
@@ -24,7 +21,6 @@ export async function generateVariations(
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
   
-  // Применяем Similarity ко ВСЕМ эффектам
   const geometryStrength = applySimilarity(config.geometry ?? 0, similarity);
   const colorStrength = applySimilarity(config.color ?? 0, similarity);
   const flowStrength = applySimilarity(config.flow ?? 0, similarity);
@@ -33,8 +29,8 @@ export async function generateVariations(
   const silhouetteStrength = applySimilarity(config.silhouette ?? 0, similarity);
   
   const allowMirror = config.mirror ?? false;
-  const blockSize = config.blockSize ?? 32;
-  const targetColorsMode = config.targetColorsMode ?? false;
+  const blockSize = config.blockSize ?? 50;
+  const targetColorsMode = config.targetColorsMode ?? true;
   const targetColors = config.targetColors ?? [];
 
   const originalFrames = await decodeGif(file);
@@ -71,7 +67,6 @@ export async function generateVariations(
       ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
       : null;
 
-    // 🆕 Передаём silhouetteMask и silhouetteStrength в generateReassemblyMap
     const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
       ? generateReassemblyMap(
           width, 
@@ -94,7 +89,6 @@ export async function generateVariations(
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color collage
       if (colorSegStrength > 0 && enabledTargets.length > 0) {
         const collageRgba = applyColorCollage(
           currentFrame, colorSegStrength, variationSeed, enabledTargets
@@ -107,7 +101,6 @@ export async function generateVariations(
         };
       }
 
-      // STEP 2: Reassembly
       if (reassemblyMap) {
         const reassembledRgba = applyReassemblyToFrame(
           currentFrame, reassemblyMap, silhouetteMask, silhouetteStrength
@@ -120,7 +113,6 @@ export async function generateVariations(
         };
       }
 
-      // STEP 3: Geometry
       if (geometryTransform) {
         const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
         currentFrame = {
@@ -131,7 +123,6 @@ export async function generateVariations(
         };
       }
 
-      // STEP 4: Displacement
       if (displacementField) {
         const modulatedField = applyTemporalConsistency(displacementField, f, totalFrames, 0);
         const warpedRgba = warpFrame(currentFrame, modulatedField, motionMask?.data);
@@ -143,7 +134,6 @@ export async function generateVariations(
         };
       }
 
-      // STEP 5: Color transform
       if (colorTransform) {
         const coloredRgba = applyColorTransformToFrame(currentFrame, colorTransform);
         currentFrame = {

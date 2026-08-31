@@ -24,12 +24,10 @@ export interface VariationConfig {
   silhouette?: number;
   reassembly?: number;
   blockSize?: number;
-  reassemblyMode?: 'scatter' | 'flow' | 'swap' | 'vortex';
   colorSegmentation?: number;
   numColors?: number;
   targetColorsMode?: boolean;
   targetColors?: TargetColor[];
-  pixelSize?: number;  // ← НОВОЕ: размер пиксельного блока для сегментации
 }
 
 export interface ReassemblyMap {

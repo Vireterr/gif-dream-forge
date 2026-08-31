@@ -33,8 +33,8 @@ function GifVariationStudio() {
   const [blockSize, setBlockSize] = useState(4);
   const [silhouette, setSilhouette] = useState(70);
   const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>("scatter");
-  const [colorSegmentation, setColorSegmentation] = useState(70);
-  const [colorThreshold, setColorThreshold] = useState(25);
+  const [colorSegmentation, setColorSegmentation] = useState(85);
+  const [numColors, setNumColors] = useState(8);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
@@ -148,7 +148,7 @@ function GifVariationStudio() {
           silhouette,
           reassemblyMode,
           colorSegmentation,
-          colorThreshold,
+          numColors,
         },
         (current, total) => {
           setProgress(current / total);
@@ -435,23 +435,20 @@ function GifVariationStudio() {
 
                   <label className="block mt-3">
                     <span className="label-mono">
-                      Чувствительность · {colorThreshold}
+                      Количество цветов · {numColors}
                     </span>
                     <input
                       type="range"
-                      min={10}
-                      max={80}
-                      step={5}
-                      value={colorThreshold}
-                      onChange={(e) =>
-                        setColorThreshold(Number(e.target.value))
-                      }
+                      min={4}
+                      max={32}
+                      step={1}
+                      value={numColors}
+                      onChange={(e) => setNumColors(Number(e.target.value))}
                       className="mt-2 w-full accent-primary"
                       disabled={stage === "generating"}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      10-20 = точное совпадение цвета, 50-80 = группирует
-                      похожие оттенки
+                      4-8 = крупные объекты (луна, линии), 12-16 = средняя детализация, 20-32 = мелкие детали
                     </p>
                   </label>
                 </div>
@@ -507,8 +504,10 @@ function GifVariationStudio() {
                       disabled={stage === "generating"}
                       className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
                     >
-                      <option value="irregular-blocks">🧱 Неправильные блоки (разного размера)</option>
-                      <option value="connected-regions">🎨 Связные области (по цвету)</option>
+                      <option value="scatter">🎲 Разброс</option>
+                      <option value="flow">🌊 Поток</option>
+                      <option value="swap">🔄 Обмен</option>
+                      <option value="vortex">🌀 Вихрь</option>
                     </select>
                   </label>
 

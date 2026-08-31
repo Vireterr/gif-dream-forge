@@ -12,7 +12,20 @@ export interface VariationConfig {
   color?: number;     // 0-100 color shift strength
   flow?: number;      // 0-100 noise displacement strength
   mirror?: boolean;   // allow horizontal mirroring
+  silhouette?: number;   // 0-100 contour preservation
+  reassembly?: number;   // 0-100 block/pixel rebuild strength
+  blockSize?: number;    // tile size in px (1 = near pixel level)
 }
+
+export interface ReassemblyMap {
+  blockSize: number;
+  cols: number;
+  rows: number;
+  offsetX: Int16Array;
+  offsetY: Int16Array;
+  flags: Uint8Array;
+}
+
 
 export interface GeometryTransform {
   rotation: number;

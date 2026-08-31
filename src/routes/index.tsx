@@ -4,6 +4,7 @@ import type { VariationResult } from "../lib/gif/types";
 import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
+type ReassemblyMode = 'scatter' | 'flow' | 'swap' | 'vortex';
 
 function getSimilarityDescription(similarity: number): string {
   if (similarity >= 90) return "Minimal changes, almost identical";
@@ -31,13 +32,14 @@ function GifVariationStudio() {
   const [reassembly, setReassembly] = useState(50);
   const [blockSize, setBlockSize] = useState(4);
   const [silhouette, setSilhouette] = useState(70);
+  const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>('scatter');
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VariationResult[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
+
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
 
@@ -59,36 +61,36 @@ function GifVariationStudio() {
 
   async function analyzeGif() {
     if (!file) return;
-    
+
     setStage("decoding");
     setError(null);
-    
+
     try {
       const { parseGIF, decompressFrames } = await import("gifuct-js");
       const buffer = await file.arrayBuffer();
       const gif = parseGIF(buffer);
       const frames = decompressFrames(gif, true);
-      
+
       if (!frames.length) {
         throw new Error("No frames found in GIF");
       }
-      
+
       const width = gif.lsd.width;
       const height = gif.lsd.height;
       const totalDelay = frames.reduce((s, f) => s + (f.delay || 100), 0);
       const fps = Math.max(4, Math.min(30, 1000 / (totalDelay / frames.length)));
-      
+
       const canvas = document.createElement("canvas");
       canvas.width = Math.min(320, width);
       canvas.height = Math.min(240, height);
       const ctx = canvas.getContext("2d");
-      
+
       if (ctx && frames[0]) {
         const patchCanvas = document.createElement("canvas");
         patchCanvas.width = frames[0].dims.width;
         patchCanvas.height = frames[0].dims.height;
         const patchCtx = patchCanvas.getContext("2d");
-        
+
         if (patchCtx) {
           patchCtx.putImageData(
             new ImageData(new Uint8ClampedArray(frames[0].patch), frames[0].dims.width, frames[0].dims.height),
@@ -98,7 +100,7 @@ function GifVariationStudio() {
           ctx.drawImage(patchCanvas, 0, 0, canvas.width, canvas.height);
         }
       }
-      
+
       setOriginalInfo({
         frames: frames.length,
         width,
@@ -107,7 +109,7 @@ function GifVariationStudio() {
         fps,
         thumb: canvas.toDataURL("image/png"),
       });
-      
+
       setStage("ready");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read this GIF");
@@ -117,34 +119,35 @@ function GifVariationStudio() {
 
   async function generate() {
     if (!file || !originalInfo) return;
-    
+
     cancelRef.current = false;
     setStage("generating");
     setProgress(0);
-    
+
     results.forEach((r) => URL.revokeObjectURL(r.url));
     setResults([]);
-    
+
     try {
       const variationResults = await generateVariations(
         file,
-        { 
-          similarity, 
-          count, 
-          geometry, 
-          color, 
-          flow, 
+        {
+          similarity,
+          count,
+          geometry,
+          color,
+          flow,
           mirror,
           reassembly,
           blockSize,
-          silhouette
+          silhouette,
+          reassemblyMode,
         },
         (current, total) => {
           setProgress(current / total);
         },
         () => cancelRef.current
       );
-      
+
       setResults(variationResults);
       setStage("ready");
     } catch (e) {
@@ -221,13 +224,13 @@ function GifVariationStudio() {
                 <dl className="grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-xs text-muted-foreground">
                   <div>Size</div>
                   <div className="text-foreground">{originalInfo.width}×{originalInfo.height}px</div>
-                  
+
                   <div>Frames</div>
                   <div className="text-foreground">{originalInfo.frames}</div>
-                  
+
                   <div>Duration</div>
                   <div className="text-foreground">{(originalInfo.duration / 1000).toFixed(2)}s</div>
-                  
+
                   <div>FPS</div>
                   <div className="text-foreground">{originalInfo.fps}</div>
                 </dl>
@@ -319,13 +322,13 @@ function GifVariationStudio() {
 
         <aside className="panel h-fit space-y-5 p-5">
           <h2 className="font-display text-lg">Settings</h2>
-          
+
           {!originalInfo && (
             <p className="text-sm text-muted-foreground">
               Analyze a GIF to configure generation settings.
             </p>
           )}
-          
+
           {originalInfo && (
             <>
               <div className="space-y-3">
@@ -369,56 +372,78 @@ function GifVariationStudio() {
                   </label>
                 ))}
 
-                <label className="block">
-                  <span className="label-mono">Пересборка (Reassembly) · {reassembly}%</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
-                    value={reassembly}
-                    onChange={(e) => setReassembly(Number(e.target.value))}
-                    className="mt-2 w-full accent-accent"
-                    disabled={stage === "generating"}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Насколько сильно перемешиваются блоки/пиксели исходного кадра
-                  </p>
-                </label>
+                <div className="border-t border-border pt-3">
+                  <h3 className="label-mono mb-3 text-sm font-semibold">Пересборка (Reassembly)</h3>
 
-                <label className="block">
-                  <span className="label-mono">Размер блока · {blockSize}px</span>
-                  <input
-                    type="range"
-                    min={1}
-                    max={16}
-                    step={1}
-                    value={blockSize}
-                    onChange={(e) => setBlockSize(Number(e.target.value))}
-                    className="mt-2 w-full accent-accent"
-                    disabled={stage === "generating"}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    1-2px = органичная "жидкая" пересборка, 8px+ = эффект кубизма/мозаики
-                  </p>
-                </label>
+                  <label className="block">
+                    <span className="label-mono">Сила · {reassembly}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={reassembly}
+                      onChange={(e) => setReassembly(Number(e.target.value))}
+                      className="mt-2 w-full accent-accent"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Насколько сильно перемешиваются блоки/пиксели исходного кадра
+                    </p>
+                  </label>
 
-                <label className="block">
-                  <span className="label-mono">Сохранение силуэта · {silhouette}%</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
-                    value={silhouette}
-                    onChange={(e) => setSilhouette(Number(e.target.value))}
-                    className="mt-2 w-full accent-primary"
-                    disabled={stage === "generating"}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Удерживает внешние границы объекта, пересобирая только внутренности
-                  </p>
-                </label>
+                  <label className="block mt-3">
+                    <span className="label-mono">Размер блока · {blockSize}px</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={16}
+                      step={1}
+                      value={blockSize}
+                      onChange={(e) => setBlockSize(Number(e.target.value))}
+                      className="mt-2 w-full accent-accent"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      1-2px = органичная "жидкая" пересборка, 8px+ = эффект кубизма/мозаики
+                    </p>
+                  </label>
+
+                  <label className="block mt-3">
+                    <span className="label-mono">Режим пересборки</span>
+                    <select
+                      value={reassemblyMode}
+                      onChange={(e) => setReassemblyMode(e.target.value as ReassemblyMode)}
+                      disabled={stage === "generating"}
+                      className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
+                    >
+                      <option value="scatter">🎲 Разброс (случайное перемещение)</option>
+                      <option value="flow">🌊 Поток (органическое движение)</option>
+                      <option value="swap">🔄 Обмен (соседние блоки меняются)</option>
+                      <option value="vortex">🌀 Вихрь (спиральное движение)</option>
+                    </select>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Определяет, как блоки перемещаются по кадру
+                    </p>
+                  </label>
+
+                  <label className="block mt-3">
+                    <span className="label-mono">Сохранение силуэта · {silhouette}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={silhouette}
+                      onChange={(e) => setSilhouette(Number(e.target.value))}
+                      className="mt-2 w-full accent-primary"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Удерживает внешние границы объекта, пересобирая только внутренности
+                    </p>
+                  </label>
+                </div>
 
                 <label className="flex items-center gap-2 text-sm">
                   <input
@@ -451,35 +476,4 @@ function GifVariationStudio() {
                 </label>
               </div>
 
-              <div className="border-t border-border pt-4">
-                <h3 className="label-mono mb-2">How It Works</h3>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex gap-2">
-                    <span className="text-primary">1.</span>
-                    <span>Пересборка кадра из собственных блоков с сохранением силуэта</span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">2.</span>
-                    <span>Perlin noise displacement для мягких "живых" краёв</span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">3.</span>
-                    <span>Временная модуляция (temporal consistency) для плавных циклов</span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">4.</span>
-                    <span>HSL-трансформация цвета для изменения палитры при сохранении стиля</span>
-                  </li>
-                </ul>
-              </div>
-            </>
-          )}
-        </aside>
-      </div>
-    </main>
-  );
-}
-
-export const Route = createFileRoute("/")({
-  component: GifVariationStudio,
-});
+              <div className="border-t border-border

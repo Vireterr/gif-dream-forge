@@ -20,22 +20,19 @@ export async function generateVariations(
   shouldCancel?: () => boolean
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
-  const geometryStrength = config.geometry ?? 60;
-  const colorStrength = config.color ?? 60;
-  const flowStrength = config.flow ?? 60;
+  const geometryStrength = config.geometry ?? 0;
+  const colorStrength = config.color ?? 0;
+  const flowStrength = config.flow ?? 0;
   const allowMirror = config.mirror ?? false;
-  const silhouetteStrength = config.silhouette ?? 50;
+  const silhouetteStrength = config.silhouette ?? 0;
   const reassemblyStrength = config.reassembly ?? 0;
-  const blockSize = config.blockSize ?? 8;
+  const blockSize = config.blockSize ?? 32;
   const colorSegStrength = config.colorSegmentation ?? 0;
   const targetColorsMode = config.targetColorsMode ?? false;
   const targetColors = config.targetColors ?? [];
 
   const originalFrames = await decodeGif(file);
-
-  if (originalFrames.length === 0) {
-    throw new Error('No frames found in GIF');
-  }
+  if (originalFrames.length === 0) throw new Error('No frames found in GIF');
 
   const { width, height } = originalFrames[0]!;
   const totalFrames = originalFrames.length;
@@ -55,14 +52,25 @@ export async function generateVariations(
     if (shouldCancel?.()) break;
 
     const variationSeed = Math.floor(Math.random() * 1e9) + v * 2654435761;
-    const flowSim = stageSimilarity(similarity, flowStrength);
-    const colorSim = stageSimilarity(similarity, colorStrength);
 
-    const displacementField = generateDisplacementField(width, height, flowSim, variationSeed);
-    const colorTransform = generateColorTransform(colorSim, variationSeed);
-    const geometryTransform = generateGeometryTransform(
-      similarity, geometryStrength, variationSeed, allowMirror
-    );
+    // 🆕 FIX: Если strength=0, эффект не применяется вообще
+    const flowSim = flowStrength > 0 ? stageSimilarity(similarity, flowStrength) : 100;
+    const colorSim = colorStrength > 0 ? stageSimilarity(similarity, colorStrength) : 100;
+
+    // 🆕 FIX: Displacement только если flow > 0
+    const displacementField = flowStrength > 0
+      ? generateDisplacementField(width, height, flowSim, variationSeed)
+      : null;
+
+    // 🆕 FIX: Color transform только если color > 0
+    const colorTransform = colorStrength > 0
+      ? generateColorTransform(colorSim, variationSeed)
+      : null;
+
+    // 🆕 FIX: Geometry только если geometry > 0
+    const geometryTransform = geometryStrength > 0
+      ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
+      : null;
 
     const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
       ? generateReassemblyMap(width, height, blockSize, reassemblyStrength, variationSeed)
@@ -78,13 +86,10 @@ export async function generateVariations(
       const originalFrame = originalFrames[f]!;
       let currentFrame: Frame = originalFrame;
 
-      // STEP 1: Color collage
+      // STEP 1: Color collage (только если включено)
       if (colorSegStrength > 0 && enabledTargets.length > 0) {
         const collageRgba = applyColorCollage(
-          currentFrame,
-          colorSegStrength,
-          variationSeed,
-          enabledTargets
+          currentFrame, colorSegStrength, variationSeed, enabledTargets
         );
         currentFrame = {
           rgba: collageRgba,
@@ -94,7 +99,7 @@ export async function generateVariations(
         };
       }
 
-      // STEP 2: Reassembly
+      // STEP 2: Reassembly (только если включено)
       if (reassemblyMap) {
         const reassembledRgba = applyReassemblyToFrame(
           currentFrame, reassemblyMap, silhouetteMask, silhouetteStrength
@@ -107,35 +112,45 @@ export async function generateVariations(
         };
       }
 
-      // STEP 3: Geometry
-      const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
-      const geoFrame: Frame = {
-        rgba: geoRgba,
+      // STEP 3: Geometry (только если включено)
+      if (geometryTransform) {
+        const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
+        currentFrame = {
+          rgba: geoRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      // STEP 4: Displacement (только если включено)
+      if (displacementField) {
+        const modulatedField = applyTemporalConsistency(displacementField, f, totalFrames, 0);
+        const warpedRgba = warpFrame(currentFrame, modulatedField, motionMask?.data);
+        currentFrame = {
+          rgba: warpedRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      // STEP 5: Color transform (только если включено)
+      if (colorTransform) {
+        const coloredRgba = applyColorTransformToFrame(currentFrame, colorTransform);
+        currentFrame = {
+          rgba: coloredRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      variationFrames.push({
+        rgba: currentFrame.rgba,
         delay: currentFrame.delay,
         width: currentFrame.width,
         height: currentFrame.height,
-      };
-
-      // STEP 4: Displacement
-      const modulatedField = applyTemporalConsistency(
-        displacementField, f, totalFrames, 0
-      );
-      const warpedRgba = warpFrame(geoFrame, modulatedField, motionMask?.data);
-      const warpedFrame: Frame = {
-        rgba: warpedRgba,
-        delay: geoFrame.delay,
-        width: geoFrame.width,
-        height: geoFrame.height,
-      };
-
-      // STEP 5: Color transform
-      const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
-
-      variationFrames.push({
-        rgba: coloredRgba,
-        delay: warpedFrame.delay,
-        width: warpedFrame.width,
-        height: warpedFrame.height,
       });
 
       if (f % 4 === 3) await new Promise((r) => setTimeout(r, 0));

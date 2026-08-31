@@ -4,7 +4,6 @@ import type { VariationResult, TargetColor } from "../lib/gif/types";
 import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
-type ReassemblyMode = "scatter" | "flow" | "swap" | "vortex";
 
 const PRESET_COLORS: Array<{ name: string; r: number; g: number; b: number }> = [
   { name: "Красный", r: 220, g: 30, b: 30 },
@@ -56,14 +55,12 @@ function GifVariationStudio() {
   const [color, setColor] = useState(55);
   const [flow, setFlow] = useState(60);
   const [reassembly, setReassembly] = useState(0);
-  const [blockSize, setBlockSize] = useState(4);
+  const [blockSize, setBlockSize] = useState(8);
   const [silhouette, setSilhouette] = useState(70);
-  const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>("scatter");
-  const [colorSegmentation, setColorSegmentation] = useState(85);
-  const [numColors, setNumColors] = useState(8);
+  const [colorSegmentation, setColorSegmentation] = useState(0);
   const [targetColorsMode, setTargetColorsMode] = useState(true);
   const [targetColors, setTargetColors] = useState<TargetColor[]>([
-    makeColor(220, 20, 60, 25, true),  // малиновый
+    makeColor(220, 20, 60, 25, true),
   ]);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
@@ -154,8 +151,8 @@ function GifVariationStudio() {
         file,
         {
           similarity, count, geometry, color, flow, mirror,
-          reassembly, blockSize, silhouette, reassemblyMode,
-          colorSegmentation, numColors,
+          reassembly, blockSize, silhouette,
+          colorSegmentation,
           targetColorsMode, targetColors,
         },
         (current, total) => setProgress(current / total),
@@ -372,7 +369,7 @@ function GifVariationStudio() {
                 {([
                   ["Geometry / shape", geometry, setGeometry, "Rotation, scale, skew, swirl, ripple"],
                   ["Color shift", color, setColor, "Hue, saturation, lightness and contrast drift"],
-                  ["Organic flow", flow, setFlow, "Perlin noise displacement for soft edges"],
+                  ["Organic flow", flow, setFlow, "Perlin noise displacement"],
                 ] as const).map(([label, value, setter, hint]) => (
                   <label key={label} className="block">
                     <span className="label-mono">{label} · {value}%</span>
@@ -387,9 +384,9 @@ function GifVariationStudio() {
                   </label>
                 ))}
 
-                {/* ===== COLOR SEGMENTATION ===== */}
+                {/* ===== COLOR COLLAGE ===== */}
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">🎨 Сегментация по цвету</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🎨 Коллаж по цвету</h3>
 
                   <label className="block">
                     <span className="label-mono">Сила перемещения · {colorSegmentation}%</span>
@@ -400,27 +397,13 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                  </label>
-
-                  <label className="block mt-3">
-                    <span className="label-mono">Количество цветов (авто) · {numColors}</span>
-                    <input
-                      type="range" min={4} max={32} step={1}
-                      value={numColors}
-                      onChange={(e) => setNumColors(Number(e.target.value))}
-                      className="mt-2 w-full accent-primary"
-                      disabled={stage === "generating" || targetColorsMode}
-                    />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Работает, когда "Выбранные цвета" выключены
+                      Перемещает выбранные цвета как единые объекты
                     </p>
                   </label>
-                </div>
 
-                {/* ===== TARGET COLORS ===== */}
-                <div className="border-t border-border pt-3">
-                  <label className="flex items-center justify-between">
-                    <span className="label-mono text-sm font-semibold">🎯 Выбранные цвета</span>
+                  <label className="flex items-center justify-between mt-3">
+                    <span className="label-mono text-sm">Выбранные цвета</span>
                     <input
                       type="checkbox"
                       checked={targetColorsMode}
@@ -429,13 +412,9 @@ function GifVariationStudio() {
                       className="accent-primary"
                     />
                   </label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Перемещать только указанные цвета (красный, синий и т.д.)
-                  </p>
 
                   {targetColorsMode && (
                     <div className="mt-3 space-y-2">
-                      {/* Preset colors */}
                       <div>
                         <p className="label-mono text-xs mb-2">Быстрый выбор:</p>
                         <div className="flex flex-wrap gap-1.5">
@@ -452,7 +431,6 @@ function GifVariationStudio() {
                         </div>
                       </div>
 
-                      {/* Selected colors list */}
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <p className="label-mono text-xs">Выбрано: {targetColors.length}</p>
@@ -486,7 +464,6 @@ function GifVariationStudio() {
                               onChange={(e) => updateColor(c.id, { enabled: e.target.checked })}
                               disabled={stage === "generating"}
                               className="accent-primary"
-                              title="Включить/выключить"
                             />
                             <div className="flex-1">
                               <input
@@ -498,7 +475,6 @@ function GifVariationStudio() {
                                 onChange={(e) => updateColor(c.id, { tolerance: Number(e.target.value) })}
                                 className="w-full accent-accent"
                                 disabled={stage === "generating"}
-                                title={`Допуск: ${c.tolerance}%`}
                               />
                               <p className="text-[0.65rem] text-muted-foreground">
                                 Допуск: {c.tolerance}%
@@ -508,7 +484,6 @@ function GifVariationStudio() {
                               onClick={() => removeColor(c.id)}
                               disabled={stage === "generating"}
                               className="rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-40"
-                              title="Удалить"
                             >
                               ✕
                             </button>
@@ -517,7 +492,7 @@ function GifVariationStudio() {
 
                         {targetColors.length === 0 && (
                           <p className="text-xs text-muted-foreground italic">
-                            Нажми на цветные квадратики выше, чтобы добавить цвета
+                            Нажми на цветные квадратики выше
                           </p>
                         )}
                       </div>
@@ -527,7 +502,7 @@ function GifVariationStudio() {
 
                 {/* ===== REASSEMBLY ===== */}
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка (Reassembly)</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка</h3>
 
                   <label className="block">
                     <span className="label-mono">Сила · {reassembly}%</span>
@@ -543,27 +518,15 @@ function GifVariationStudio() {
                   <label className="block mt-3">
                     <span className="label-mono">Размер блока · {blockSize}px</span>
                     <input
-                      type="range" min={1} max={64} step={1}
+                      type="range" min={0} max={100} step={1}
                       value={blockSize}
                       onChange={(e) => setBlockSize(Number(e.target.value))}
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                  </label>
-
-                  <label className="block mt-3">
-                    <span className="label-mono">Режим</span>
-                    <select
-                      value={reassemblyMode}
-                      onChange={(e) => setReassemblyMode(e.target.value as ReassemblyMode)}
-                      disabled={stage === "generating"}
-                      className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
-                    >
-                      <option value="scatter">🎲 Разброс</option>
-                      <option value="flow">🌊 Поток</option>
-                      <option value="swap">🔄 Обмен</option>
-                      <option value="vortex">🌀 Вихрь</option>
-                    </select>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      0 = выключено, 1-100px
+                    </p>
                   </label>
 
                   <label className="block mt-3">

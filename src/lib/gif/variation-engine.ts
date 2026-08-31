@@ -11,7 +11,6 @@ import { applyColorCollage } from './color-segmentation';
 
 /**
  * Similarity — главный множитель для ВСЕХ эффектов.
- * Реальная сила = (сила_ползунка / 100) × (similarity / 100) × 100
  */
 function applySimilarity(effectStrength: number, similarity: number): number {
   return (effectStrength / 100) * (similarity / 100) * 100;
@@ -25,7 +24,7 @@ export async function generateVariations(
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
   
-  // Similarity применяется ко ВСЕМ эффектам как главный множитель
+  // Применяем Similarity ко ВСЕМ эффектам
   const geometryStrength = applySimilarity(config.geometry ?? 0, similarity);
   const colorStrength = applySimilarity(config.color ?? 0, similarity);
   const flowStrength = applySimilarity(config.flow ?? 0, similarity);
@@ -60,22 +59,19 @@ export async function generateVariations(
 
     const variationSeed = Math.floor(Math.random() * 1e9) + v * 2654435761;
 
-    // Displacement только если flow > 0
     const displacementField = flowStrength > 0
       ? generateDisplacementField(width, height, flowStrength, variationSeed)
       : null;
 
-    // Color transform только если color > 0
     const colorTransform = colorStrength > 0
       ? generateColorTransform(colorStrength, variationSeed)
       : null;
 
-    // Geometry только если geometry > 0
     const geometryTransform = geometryStrength > 0
       ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
       : null;
 
-    // Reassembly только если включено (с передачей silhouette)
+    // 🆕 Передаём silhouetteMask и silhouetteStrength в generateReassemblyMap
     const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
       ? generateReassemblyMap(
           width, 

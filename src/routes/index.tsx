@@ -1,30 +1,16 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
-import { generateVariations } from "@/lib/gif/variation-engine";
-import type { VariationResult } from "@/lib/gif/types";
-
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "GIF Variation Studio — Generate Visual Variations" },
-      {
-        name: "description",
-        content:
-          "Upload a GIF and generate multiple visual variations that preserve composition, movement, and style while introducing controlled differences.",
-      },
-      { property: "og:title", content: "GIF Variation Studio" },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-      {
-        property: "og:description",
-        content: "Generate N variations of a single GIF with controlled similarity levels.",
-      },
-    ],
-  }),
-  component: GifVariationStudio,
-});
+import { useState, useRef } from "react";
+import type { VariationResult } from "../lib/gif/types";
+import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
+
+function getSimilarityDescription(similarity: number): string {
+  if (similarity >= 90) return "Minimal changes, almost identical";
+  if (similarity >= 70) return "Subtle variations, same character";
+  if (similarity >= 50) return "Noticeable differences, same style";
+  if (similarity >= 30) return "Creative reinterpretation";
+  return "Radical transformation";
+}
 
 function GifVariationStudio() {
   const [file, setFile] = useState<File | null>(null);
@@ -41,6 +27,9 @@ function GifVariationStudio() {
   const [geometry, setGeometry] = useState(65);
   const [color, setColor] = useState(55);
   const [flow, setFlow] = useState(60);
+  const [reassembly, setReassembly] = useState(50);
+  const [blockSize, setBlockSize] = useState(4);
+  const [silhouette, setSilhouette] = useState(70);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
@@ -51,21 +40,21 @@ function GifVariationStudio() {
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
 
-  const pickFile = useCallback((list: FileList | null) => {
-    if (!list || list.length === 0) return;
-    const gifFile = Array.from(list).find(
-      (f) => f.type === "image/gif" || f.name.toLowerCase().endsWith(".gif")
-    );
-    if (!gifFile) {
-      setError("Please select a .gif file");
+  const busy = stage === "decoding" || stage === "generating";
+
+  function pickFile(files: FileList | null) {
+    if (!files || !files[0]) return;
+    const f = files[0];
+    if (f.type !== "image/gif") {
+      setError("Please select a GIF file");
       return;
     }
-    setError(null);
-    setFile(gifFile);
+    setFile(f);
     setOriginalInfo(null);
     setResults([]);
+    setError(null);
     setStage("idle");
-  }, []);
+  }
 
   async function analyzeGif() {
     if (!file) return;
@@ -74,7 +63,6 @@ function GifVariationStudio() {
     setError(null);
     
     try {
-      // Use gifuct-js for quick analysis
       const { parseGIF, decompressFrames } = await import("gifuct-js");
       const buffer = await file.arrayBuffer();
       const gif = parseGIF(buffer);
@@ -89,7 +77,6 @@ function GifVariationStudio() {
       const totalDelay = frames.reduce((s, f) => s + (f.delay || 100), 0);
       const fps = Math.max(4, Math.min(30, 1000 / (totalDelay / frames.length)));
       
-      // Create thumbnail from first frame
       const canvas = document.createElement("canvas");
       canvas.width = Math.min(320, width);
       canvas.height = Math.min(240, height);
@@ -134,15 +121,23 @@ function GifVariationStudio() {
     setStage("generating");
     setProgress(0);
     
-    // Revoke old URLs
     results.forEach((r) => URL.revokeObjectURL(r.url));
     setResults([]);
     
     try {
       const variationResults = await generateVariations(
         file,
-        { similarity, count, geometry, color, flow, mirror },
-
+        { 
+          similarity, 
+          count, 
+          geometry, 
+          color, 
+          flow, 
+          mirror,
+          reassembly,
+          blockSize,
+          silhouette
+        },
         (current, total) => {
           setProgress(current / total);
         },
@@ -157,25 +152,14 @@ function GifVariationStudio() {
     }
   }
 
-  async function downloadAll() {
-    for (const result of results) {
+  function downloadAll() {
+    results.forEach((result) => {
       const a = document.createElement("a");
       a.href = result.url;
       a.download = `variation-${result.id}.gif`;
       a.click();
-      await new Promise((r) => setTimeout(r, 120));
-    }
+    });
   }
-
-  function getSimilarityDescription(value: number): string {
-    if (value >= 95) return "Nearly identical (0-1px displacement)";
-    if (value >= 85) return "Very similar (1-3px displacement)";
-    if (value >= 70) return "Similar (3-8px displacement)";
-    if (value >= 50) return "Moderate changes (8-15px displacement)";
-    return "Significant changes (15-20px displacement)";
-  }
-
-  const busy = stage === "decoding" || stage === "generating";
 
   return (
     <main className="mx-auto max-w-7xl px-5 py-10 md:py-16">
@@ -191,7 +175,6 @@ function GifVariationStudio() {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="space-y-6">
-          {/* Upload Zone */}
           <div
             className="panel flex flex-col items-center justify-center gap-3 border-dashed p-10 text-center transition-colors hover:border-primary/60"
             onDragOver={(e) => e.preventDefault()}
@@ -222,7 +205,6 @@ function GifVariationStudio() {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          {/* Original Preview */}
           {originalInfo && (
             <div className="panel p-5">
               <p className="label-mono mb-3">Original GIF</p>
@@ -252,7 +234,6 @@ function GifVariationStudio() {
             </div>
           )}
 
-          {/* Controls */}
           <div className="flex flex-wrap items-center gap-3">
             <button
               disabled={!file || busy}
@@ -286,7 +267,6 @@ function GifVariationStudio() {
             )}
           </div>
 
-          {/* Progress */}
           {stage === "generating" && (
             <div>
               <div className="mb-2 flex items-center justify-between">
@@ -304,7 +284,6 @@ function GifVariationStudio() {
             </div>
           )}
 
-          {/* Results Grid */}
           {results.length > 0 && (
             <div>
               <p className="label-mono mb-3">
@@ -337,7 +316,6 @@ function GifVariationStudio() {
           )}
         </section>
 
-        {/* Sidebar */}
         <aside className="panel h-fit space-y-5 p-5">
           <h2 className="font-display text-lg">Settings</h2>
           
@@ -390,6 +368,57 @@ function GifVariationStudio() {
                   </label>
                 ))}
 
+                <label className="block">
+                  <span className="label-mono">Пересборка (Reassembly) · {reassembly}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={reassembly}
+                    onChange={(e) => setReassembly(Number(e.target.value))}
+                    className="mt-2 w-full accent-accent"
+                    disabled={stage === "generating"}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Насколько сильно перемешиваются блоки/пиксели исходного кадра
+                  </p>
+                </label>
+
+                <label className="block">
+                  <span className="label-mono">Размер блока · {blockSize}px</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={16}
+                    step={1}
+                    value={blockSize}
+                    onChange={(e) => setBlockSize(Number(e.target.value))}
+                    className="mt-2 w-full accent-accent"
+                    disabled={stage === "generating"}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    1-2px = органичная "жидкая" пересборка, 8px+ = эффект кубизма/мозаики
+                  </p>
+                </label>
+
+                <label className="block">
+                  <span className="label-mono">Сохранение силуэта · {silhouette}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={silhouette}
+                    onChange={(e) => setSilhouette(Number(e.target.value))}
+                    className="mt-2 w-full accent-primary"
+                    disabled={stage === "generating"}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Удерживает внешние границы объекта, пересобирая только внутренности
+                  </p>
+                </label>
+
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -400,7 +429,6 @@ function GifVariationStudio() {
                   />
                   <span>Allow mirrored variations</span>
                 </label>
-
 
                 <label className="block">
                   <div className="flex items-baseline justify-between">
@@ -427,23 +455,19 @@ function GifVariationStudio() {
                 <ul className="space-y-2 text-xs text-muted-foreground">
                   <li className="flex gap-2">
                     <span className="text-primary">1.</span>
-                    <span>Perlin noise displacement field applied to all frames</span>
+                    <span>Пересборка кадра из собственных блоков с сохранением силуэта</span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">2.</span>
-                    <span>Bilinear interpolation prevents pixelation artifacts</span>
+                    <span>Perlin noise displacement для мягких "живых" краёв</span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">3.</span>
-                    <span>Motion mask reduces displacement in moving areas</span>
+                    <span>Временная модуляция (temporal consistency) для плавных циклов</span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">4.</span>
-                    <span>Sinusoidal temporal modulation ensures smooth loops</span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-primary">5.</span>
-                    <span>HSL color transform adds variety while preserving look</span>
+                    <span>HSL-трансформация цвета для изменения палитры при сохранении стиля</span>
                   </li>
                 </ul>
               </div>
@@ -454,3 +478,5 @@ function GifVariationStudio() {
     </main>
   );
 }
+
+export default GifVariationStudio;

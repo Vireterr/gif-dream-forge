@@ -8,7 +8,30 @@ export interface Frame {
 export interface VariationConfig {
   similarity: number; // 0-100
   count: number;      // 1-100
+  geometry?: number;  // 0-100 shape/geometry strength
+  color?: number;     // 0-100 color shift strength
+  flow?: number;      // 0-100 noise displacement strength
+  mirror?: boolean;   // allow horizontal mirroring
 }
+
+export interface GeometryTransform {
+  rotation: number;
+  scale: number;
+  scaleY: number;
+  skewX: number;
+  skewY: number;
+  shiftX: number;
+  shiftY: number;
+  swirl: number;
+  swirlRadius: number;
+  rippleAmp: number;
+  rippleFreq: number;
+  ripplePhase: number;
+  bulge: number;
+  mirror: boolean;
+  breathing: number;
+}
+
 
 export interface VariationResult {
   id: string;

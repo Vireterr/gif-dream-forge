@@ -2,12 +2,18 @@
  * Variation Engine - Main orchestrator for generating GIF variations
  */
 
-import type { Frame, VariationConfig, VariationResult, DisplacementField, ColorTransform, MotionMask } from './types';
+import type { Frame, VariationConfig, VariationResult, MotionMask } from './types';
 import { decodeGif } from './decode';
 import { encodeVariation } from './encode';
 import { generateDisplacementField, warpFrame, applyTemporalConsistency } from './displacement';
 import { generateColorTransform, applyColorTransformToFrame } from './color-transform';
-import { computeMotionMask, getTemporalModulation } from './temporal';
+import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
+import { computeMotionMask } from './temporal';
+
+/** Blend a global similarity with a per-stage strength (0-100). */
+function stageSimilarity(similarity: number, strength: number): number {
+  return 100 - (100 - similarity) * (strength / 100);
+}
 
 /**
  * Generate N variations of a GIF
@@ -19,7 +25,11 @@ export async function generateVariations(
   shouldCancel?: () => boolean
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
-  
+  const geometryStrength = config.geometry ?? 60;
+  const colorStrength = config.color ?? 60;
+  const flowStrength = config.flow ?? 60;
+  const allowMirror = config.mirror ?? false;
+
   // Decode original GIF
   const originalFrames = await decodeGif(file);
   
@@ -47,34 +57,50 @@ export async function generateVariations(
     // Deterministic seed for this variation
     const variationSeed = Math.floor(Math.random() * 1e9) + v * 2654435761;
     
+    const flowSim = stageSimilarity(similarity, flowStrength);
+    const colorSim = stageSimilarity(similarity, colorStrength);
+
     // Generate displacement field ONCE per variation (shared base field)
-    const baseFreq = 1 + ((100 - similarity) / 100) * 4;
-    const displacementField = generateDisplacementField(width, height, similarity, variationSeed);
+    const displacementField = generateDisplacementField(width, height, flowSim, variationSeed);
     
     // Generate color transform ONCE per variation
-    const colorTransform = generateColorTransform(similarity, variationSeed);
+    const colorTransform = generateColorTransform(colorSim, variationSeed);
+
+    // Geometry / shape transform ONCE per variation
+    const geometryTransform = generateGeometryTransform(
+      similarity,
+      geometryStrength,
+      variationSeed,
+      allowMirror
+    );
     
     // Calculate temporal amplitude based on similarity
-    const temporalAmplitude = ((100 - similarity) / 100) * 5;
+    const temporalAmplitude = ((100 - flowSim) / 100) * 5;
     
     // Process each frame
     const variationFrames: Frame[] = [];
     
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
-      
-      // Apply temporal consistency modulation
+
+      // 1. Geometry / shape warp
+      const geoRgba = applyGeometryToFrame(originalFrame, geometryTransform, f, totalFrames);
+      const geoFrame: Frame = {
+        rgba: geoRgba,
+        delay: originalFrame.delay,
+        width: originalFrame.width,
+        height: originalFrame.height
+      };
+
+      // 2. Organic noise displacement with temporal consistency
       const modulatedField = applyTemporalConsistency(
         displacementField,
         f,
         totalFrames,
         temporalAmplitude
       );
+      const warpedRgba = warpFrame(geoFrame, modulatedField, motionMask?.data);
       
-      // Warp frame using displacement field and motion mask
-      const warpedRgba = warpFrame(originalFrame, modulatedField, motionMask?.data);
-      
-      // Create warped frame with same dimensions and delay
       const warpedFrame: Frame = {
         rgba: warpedRgba,
         delay: originalFrame.delay,
@@ -82,18 +108,15 @@ export async function generateVariations(
         height: originalFrame.height
       };
       
-      // Apply color transform
+      // 3. Color transform
       const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
       
-      // Create final frame
-      const finalFrame: Frame = {
+      variationFrames.push({
         rgba: coloredRgba,
         delay: originalFrame.delay,
         width: originalFrame.width,
         height: originalFrame.height
-      };
-      
-      variationFrames.push(finalFrame);
+      });
       
       // Yield every few frames to prevent blocking
       if (f % 4 === 3) {
@@ -119,6 +142,7 @@ export async function generateVariations(
   
   return results;
 }
+
 
 /**
  * Preview a single variation without encoding

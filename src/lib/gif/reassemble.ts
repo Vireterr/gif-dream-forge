@@ -1,52 +1,71 @@
 /**
- * Reassembly: blocks SWAP positions with each other (like a puzzle).
+ * Reassembly: each block moves to a RANDOM position.
+ * Blocks can overlap. Empty spaces filled by stretching neighbor colors.
  * Block size is a PERCENTAGE of image size (0-100%).
- * Old positions are filled with AVERAGE NEIGHBOR COLOR.
- * Silhouette mask protects object edges — blocks on boundaries don't swap.
+ * Silhouette mask protects object edges.
  */
 
 import type { Frame, ReassemblyMap } from './types';
 import { mulberry32 } from '../utils/noise';
 
 /**
- * Get average color of neighbors (for background fill).
+ * Fill empty spaces by stretching neighboring pixel colors (BFS).
  */
-function getAverageNeighborColor(
+function fillEmptySpacesWithStretch(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
-  x: number,
-  y: number,
-  radius: number,
   isEmpty: (i: number) => boolean
-): { r: number; g: number; b: number; a: number } {
-  let sumR = 0, sumG = 0, sumB = 0, sumA = 0, count = 0;
-  const r2 = radius * radius;
+): void {
+  const total = width * height;
+  const queue: Array<[number, number, number, number]> = [];
+  const visited = new Uint8Array(total);
 
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
-      if (dx * dx + dy * dy > r2) continue;
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const ni = ny * width + nx;
-      if (isEmpty(ni)) continue;
-      const pi = ni * 4;
-      sumR += rgba[pi];
-      sumG += rgba[pi + 1];
-      sumB += rgba[pi + 2];
-      sumA += rgba[pi + 3];
-      count++;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (isEmpty(idx)) {
+        const neighbors = [
+          [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nidx = ny * width + nx;
+          if (!isEmpty(nidx)) {
+            queue.push([x, y, nx, ny]);
+            visited[idx] = 1;
+            break;
+          }
+        }
+      }
     }
   }
 
-  if (count === 0) return { r: 0, g: 0, b: 0, a: 0 };
-  return {
-    r: Math.round(sumR / count),
-    g: Math.round(sumG / count),
-    b: Math.round(sumB / count),
-    a: Math.round(sumA / count),
-  };
+  let qi = 0;
+  while (qi < queue.length) {
+    const [x, y, srcX, srcY] = queue[qi++];
+    const idx = y * width + x;
+    const srcIdx = srcY * width + srcX;
+
+    const si = srcIdx * 4;
+    const di = idx * 4;
+    rgba[di] = rgba[si];
+    rgba[di + 1] = rgba[si + 1];
+    rgba[di + 2] = rgba[si + 2];
+    rgba[di + 3] = rgba[si + 3];
+
+    const neighbors = [
+      [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1],
+    ];
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const nidx = ny * width + nx;
+      if (isEmpty(nidx) && !visited[nidx]) {
+        queue.push([nx, ny, srcX, srcY]);
+        visited[nidx] = 1;
+      }
+    }
+  }
 }
 
 export function generateReassemblyMap(
@@ -72,15 +91,11 @@ export function generateReassemblyMap(
 
   const rand = mulberry32((seed ^ 0x27d4eb2f) >>> 0);
 
-  // 🆕 Create list of all block indices
-  const blockIndices: number[] = [];
-  for (let i = 0; i < total; i++) {
-    blockIndices.push(i);
-  }
+  // Max movement = percentage of image size
+  const maxMoveBlocks = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
+  const moveChance = 0.7 + k * 0.3;
 
-  // 🆕 Filter out blocks on edges (if silhouette protection is enabled)
-  const movableBlocks: number[] = [];
-  for (const i of blockIndices) {
+  for (let i = 0; i < total; i++) {
     const bx = i % cols;
     const by = Math.floor(i / cols);
     const x0 = bx * size;
@@ -88,7 +103,7 @@ export function generateReassemblyMap(
     const x1 = Math.min(width, x0 + size);
     const y1 = Math.min(height, y0 + size);
 
-    // Check if this block is on an edge
+    // Check silhouette edge
     let isOnEdge = false;
     if (silhouetteMask && silhouetteStrength > 0) {
       const guard = Math.min(100, silhouetteStrength) / 100;
@@ -108,44 +123,22 @@ export function generateReassemblyMap(
       }
     }
 
-    if (!isOnEdge) {
-      movableBlocks.push(i);
+    if (isOnEdge) continue;
+
+    if (rand() < moveChance) {
+      // Random direction and distance (in block units)
+      const angle = rand() * Math.PI * 2;
+      const dist = (0.3 + rand() * 0.7) * maxMoveBlocks;
+      offsetX[i] = Math.round(Math.cos(angle) * dist);
+      offsetY[i] = Math.round(Math.sin(angle) * dist);
+
+      // Random flip
+      let f = 0;
+      if (k > 0.5 && rand() > 0.8) f |= 1;
+      if (k > 0.6 && rand() > 0.85) f |= 2;
+      flags[i] = f;
     }
   }
-
-  // 🆕 Shuffle movable blocks (Fisher-Yates algorithm)
-  for (let i = movableBlocks.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [movableBlocks[i], movableBlocks[j]] = [movableBlocks[j], movableBlocks[i]];
-  }
-
-  // 🆕 Create swap pairs: block A goes to position of block B, and vice versa
-  const swapMap = new Map<number, number>();
-  for (let i = 0; i < movableBlocks.length - 1; i += 2) {
-    const blockA = movableBlocks[i];
-    const blockB = movableBlocks[i + 1];
-    
-    // Calculate swap offset for block A (where block B is)
-    const ax = blockA % cols;
-    const ay = Math.floor(blockA / cols);
-    const bx = blockB % cols;
-    const by = Math.floor(blockB / cols);
-    
-    offsetX[blockA] = bx - ax;
-    offsetY[blockA] = by - ay;
-    
-    // Calculate swap offset for block B (where block A is)
-    offsetX[blockB] = ax - bx;
-    offsetY[blockB] = ay - by;
-    
-    // Random flip for visual variety
-    if (k > 0.5 && rand() > 0.7) {
-      flags[blockA] |= rand() > 0.5 ? 1 : 2;
-      flags[blockB] |= rand() > 0.5 ? 1 : 2;
-    }
-  }
-
-  // If odd number of blocks, last one stays in place (offsets already 0)
 
   return { blockSize: size, cols, rows, offsetX, offsetY, flags };
 }
@@ -165,13 +158,13 @@ export function applyReassemblyToFrame(
   const cleared = new Uint8Array(width * height);
   const written = new Uint8Array(width * height);
 
+  // Save all blocks that will move
   const movedBlocks: Array<{
     pixels: Uint8ClampedArray;
     w: number;
     h: number;
     newX: number;
     newY: number;
-    flag: number;
   }> = [];
 
   for (let by = 0; by < rows; by++) {
@@ -190,6 +183,7 @@ export function applyReassemblyToFrame(
       const w = x1 - x0;
       const h = y1 - y0;
 
+      // Copy block pixels (with flip)
       const pixels = new Uint8ClampedArray(w * h * 4);
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
@@ -206,17 +200,16 @@ export function applyReassemblyToFrame(
         }
       }
 
-      // 🆕 For swap logic, new position is calculated differently
       const newX = ((x0 + ox * size) % width + width) % width;
       const newY = ((y0 + oy * size) % height + height) % height;
 
-      movedBlocks.push({ pixels, w, h, newX, newY, flag });
+      movedBlocks.push({ pixels, w, h, newX, newY });
 
+      // Clear old position
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
-          const idx = y * width + x;
-          cleared[idx] = 1;
-          const di = idx * 4;
+          cleared[y * width + x] = 1;
+          const di = (y * width + x) * 4;
           out[di] = 0;
           out[di + 1] = 0;
           out[di + 2] = 0;
@@ -226,6 +219,7 @@ export function applyReassemblyToFrame(
     }
   }
 
+  // Place blocks at random positions (can overlap — last one wins)
   for (const block of movedBlocks) {
     const { pixels, w, h, newX, newY } = block;
     for (let ly = 0; ly < h; ly++) {
@@ -243,21 +237,9 @@ export function applyReassemblyToFrame(
     }
   }
 
+  // Fill empty spaces with stretched neighbor colors
   const isEmpty = (i: number) => cleared[i] === 1 && written[i] === 0;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (isEmpty(idx)) {
-        const bg = getAverageNeighborColor(src, width, height, x, y, 8, isEmpty);
-        const di = idx * 4;
-        out[di] = bg.r;
-        out[di + 1] = bg.g;
-        out[di + 2] = bg.b;
-        out[di + 3] = bg.a;
-      }
-    }
-  }
+  fillEmptySpacesWithStretch(out, width, height, isEmpty);
 
   return out;
 }

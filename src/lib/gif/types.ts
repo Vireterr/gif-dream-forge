@@ -28,6 +28,9 @@ export interface StyleProfile {
   color: ColorProfile;
   motionProfile: MotionProfile;
   textureProfile: TextureProfile;
+  mode?: string;
+  params?: any;
+  effects?: any;
 }
 
 export interface StyleParams {

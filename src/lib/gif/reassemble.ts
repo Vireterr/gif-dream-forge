@@ -2,6 +2,7 @@
  * Reassembly: splits image into blocks and moves each block.
  * Block size is a PERCENTAGE of image size (0-100%).
  * Old positions are filled with AVERAGE NEIGHBOR COLOR (not original).
+ * Silhouette mask protects object edges — blocks on boundaries move less.
  */
 
 import type { Frame, ReassemblyMap } from './types';
@@ -88,11 +89,48 @@ export function generateReassemblyMap(
   return { blockSize: size, cols, rows, offsetX, offsetY, flags };
 }
 
+/**
+ * Calculate how much a block should be damped based on silhouette mask.
+ * Returns 0-1, where 0 = fully damped (on edge), 1 = no damping (not on edge).
+ */
+function calculateEdgeDamping(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  width: number,
+  silhouetteMask: Uint8Array | undefined,
+  silhouetteStrength: number
+): number {
+  if (!silhouetteMask || silhouetteStrength <= 0) return 1;
+
+  const guard = Math.min(100, silhouetteStrength) / 100;
+  let sum = 0;
+  let count = 0;
+
+  // Sample every 3rd pixel for performance
+  for (let y = y0; y < y1; y += 3) {
+    for (let x = x0; x < x1; x += 3) {
+      sum += silhouetteMask[y * width + x] ?? 0;
+      count++;
+    }
+  }
+
+  if (count === 0) return 1;
+
+  // edgeValue: 0 = no edges in block, 1 = all pixels are edges
+  const edgeValue = sum / count / 255;
+
+  // dampening: 1 = no damping, 0 = fully damped
+  const dampening = 1 - Math.min(1, edgeValue * guard);
+  return dampening;
+}
+
 export function applyReassemblyToFrame(
   frame: Frame,
   map: ReassemblyMap,
-  _silhouetteMask?: Uint8Array,
-  _silhouetteStrength = 0
+  silhouetteMask?: Uint8Array,
+  silhouetteStrength = 0
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
@@ -100,11 +138,9 @@ export function applyReassemblyToFrame(
 
   out.set(src);
 
-  // Track which pixels were "cleared" (old positions of moved blocks)
   const cleared = new Uint8Array(width * height);
   const written = new Uint8Array(width * height);
 
-  // STEP 1: Save moved blocks to temp buffer, clear old positions
   const movedBlocks: Array<{
     pixels: Uint8ClampedArray;
     w: number;
@@ -117,8 +153,8 @@ export function applyReassemblyToFrame(
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
       const bi = by * cols + bx;
-      const ox = offsetX[bi] ?? 0;
-      const oy = offsetY[bi] ?? 0;
+      let ox = offsetX[bi] ?? 0;
+      let oy = offsetY[bi] ?? 0;
       const flag = flags[bi] ?? 0;
 
       if (ox === 0 && oy === 0) continue;
@@ -130,7 +166,16 @@ export function applyReassemblyToFrame(
       const w = x1 - x0;
       const h = y1 - y0;
 
-      // Save block pixels (with possible flip)
+      // 🆕 Apply silhouette damping to this block's movement
+      const damping = calculateEdgeDamping(
+        x0, y0, x1, y1, width, silhouetteMask, silhouetteStrength
+      );
+      ox = Math.round(ox * damping);
+      oy = Math.round(oy * damping);
+
+      // If fully damped, skip this block
+      if (ox === 0 && oy === 0) continue;
+
       const pixels = new Uint8ClampedArray(w * h * 4);
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
@@ -147,13 +192,11 @@ export function applyReassemblyToFrame(
         }
       }
 
-      // Calculate new position
       const newX = ((x0 + ox * size) % width + width) % width;
       const newY = ((y0 + oy * size) % height + height) % height;
 
       movedBlocks.push({ pixels, w, h, newX, newY, flag });
 
-      // Clear old position
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
           const idx = y * width + x;
@@ -168,7 +211,6 @@ export function applyReassemblyToFrame(
     }
   }
 
-  // STEP 2: Place blocks at new positions
   for (const block of movedBlocks) {
     const { pixels, w, h, newX, newY } = block;
     for (let ly = 0; ly < h; ly++) {
@@ -186,7 +228,6 @@ export function applyReassemblyToFrame(
     }
   }
 
-  // STEP 3: Fill cleared pixels with AVERAGE NEIGHBOR COLOR (not original!)
   const isEmpty = (i: number) => cleared[i] === 1 && written[i] === 0;
 
   for (let y = 0; y < height; y++) {

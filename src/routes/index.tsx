@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef } from "react";
 import type { VariationResult } from "../lib/gif/types";
-import type { ReassemblyMode } from "../lib/gif/reassemble";
 import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
+type ReassemblyMode = "scatter" | "flow" | "swap" | "vortex";
 
 function getSimilarityDescription(similarity: number): string {
   if (similarity >= 90) return "Minimal changes, almost identical";
@@ -29,10 +29,12 @@ function GifVariationStudio() {
   const [geometry, setGeometry] = useState(65);
   const [color, setColor] = useState(55);
   const [flow, setFlow] = useState(60);
-  const [reassembly, setReassembly] = useState(50);
+  const [reassembly, setReassembly] = useState(0);
   const [blockSize, setBlockSize] = useState(4);
   const [silhouette, setSilhouette] = useState(70);
-  const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>('scatter');
+  const [reassemblyMode, setReassemblyMode] = useState<ReassemblyMode>("scatter");
+  const [colorSegmentation, setColorSegmentation] = useState(70);
+  const [colorThreshold, setColorThreshold] = useState(25);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
@@ -93,7 +95,11 @@ function GifVariationStudio() {
 
         if (patchCtx) {
           patchCtx.putImageData(
-            new ImageData(new Uint8ClampedArray(frames[0].patch), frames[0].dims.width, frames[0].dims.height),
+            new ImageData(
+              new Uint8ClampedArray(frames[0].patch),
+              frames[0].dims.width,
+              frames[0].dims.height
+            ),
             0,
             0
           );
@@ -141,6 +147,8 @@ function GifVariationStudio() {
           blockSize,
           silhouette,
           reassemblyMode,
+          colorSegmentation,
+          colorThreshold,
         },
         (current, total) => {
           setProgress(current / total);
@@ -171,8 +179,9 @@ function GifVariationStudio() {
         <p className="label-mono">Visual variation generator</p>
         <h1 className="mt-2 text-4xl font-bold md:text-5xl">GIF Variation Studio</h1>
         <p className="mt-3 max-w-2xl text-muted-foreground">
-          Upload a single GIF to generate multiple visual variations. Each variation preserves the original's
-          composition, movement timing, and character while introducing controlled differences through pixel
+          Upload a single GIF to generate multiple visual variations. Each
+          variation preserves the original's composition, movement timing, and
+          character while introducing controlled differences through pixel
           displacement and color transformation.
         </p>
       </header>
@@ -195,16 +204,16 @@ function GifVariationStudio() {
               onChange={(e) => pickFile(e.target.files)}
             />
             <p className="font-display text-lg">Drop a GIF here</p>
-            <p className="text-sm text-muted-foreground">one file · processed entirely in your browser</p>
+            <p className="text-sm text-muted-foreground">
+              one file · processed entirely in your browser
+            </p>
             <button
               onClick={() => inputRef.current?.click()}
               className="mt-2 rounded-md border border-border bg-surface-2 px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
             >
               Choose file
             </button>
-            {file && (
-              <p className="label-mono mt-2">{file.name}</p>
-            )}
+            {file && <p className="label-mono mt-2">{file.name}</p>}
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
@@ -218,19 +227,22 @@ function GifVariationStudio() {
                     src={originalInfo.thumb}
                     alt="Original GIF preview"
                     className="rounded-md border border-border"
-                    style={{ width: originalInfo.width > 320 ? 320 : originalInfo.width }}
+                    style={{
+                      width: originalInfo.width > 320 ? 320 : originalInfo.width,
+                    }}
                   />
                 )}
                 <dl className="grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-xs text-muted-foreground">
                   <div>Size</div>
-                  <div className="text-foreground">{originalInfo.width}×{originalInfo.height}px</div>
-
+                  <div className="text-foreground">
+                    {originalInfo.width}×{originalInfo.height}px
+                  </div>
                   <div>Frames</div>
                   <div className="text-foreground">{originalInfo.frames}</div>
-
                   <div>Duration</div>
-                  <div className="text-foreground">{(originalInfo.duration / 1000).toFixed(2)}s</div>
-
+                  <div className="text-foreground">
+                    {(originalInfo.duration / 1000).toFixed(2)}s
+                  </div>
                   <div>FPS</div>
                   <div className="text-foreground">{originalInfo.fps}</div>
                 </dl>
@@ -308,7 +320,9 @@ function GifVariationStudio() {
                       loading="lazy"
                     />
                     <div className="flex items-center justify-between px-2 py-1.5">
-                      <span className="label-mono text-[0.6rem]">{result.id.split('-')[0]}</span>
+                      <span className="label-mono text-[0.6rem]">
+                        {result.id.split("-")[0]}
+                      </span>
                       <span className="font-mono text-[0.6rem] text-muted-foreground">
                         {Math.round(result.bytes / 1024)}kb
                       </span>
@@ -334,7 +348,9 @@ function GifVariationStudio() {
               <div className="space-y-3">
                 <label className="block">
                   <div className="flex items-baseline justify-between">
-                    <span className="label-mono">Similarity · {similarity}%</span>
+                    <span className="label-mono">
+                      Similarity · {similarity}%
+                    </span>
                   </div>
                   <input
                     type="range"
@@ -352,12 +368,29 @@ function GifVariationStudio() {
                 </label>
 
                 {([
-                  ["Geometry / shape", geometry, setGeometry, "Rotation, scale, skew, swirl, ripple — changes form, not just color"],
-                  ["Color shift", color, setColor, "Hue, saturation, lightness and contrast drift"],
-                  ["Organic flow", flow, setFlow, "Perlin noise displacement for soft, hand-redrawn edges"],
+                  [
+                    "Geometry / shape",
+                    geometry,
+                    setGeometry,
+                    "Rotation, scale, skew, swirl, ripple — changes form, not just color",
+                  ],
+                  [
+                    "Color shift",
+                    color,
+                    setColor,
+                    "Hue, saturation, lightness and contrast drift",
+                  ],
+                  [
+                    "Organic flow",
+                    flow,
+                    setFlow,
+                    "Perlin noise displacement for soft, hand-redrawn edges",
+                  ],
                 ] as const).map(([label, value, setter, hint]) => (
                   <label key={label} className="block">
-                    <span className="label-mono">{label} · {value}%</span>
+                    <span className="label-mono">
+                      {label} · {value}%
+                    </span>
                     <input
                       type="range"
                       min={0}
@@ -372,11 +405,67 @@ function GifVariationStudio() {
                   </label>
                 ))}
 
+                {/* ===== COLOR SEGMENTATION ===== */}
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">Пересборка (Reassembly)</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">
+                    🎨 Сегментация по цвету
+                  </h3>
 
                   <label className="block">
-                    <span className="label-mono">Сила · {reassembly}%</span>
+                    <span className="label-mono">
+                      Сила перемещения · {colorSegmentation}%
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={colorSegmentation}
+                      onChange={(e) =>
+                        setColorSegmentation(Number(e.target.value))
+                      }
+                      className="mt-2 w-full accent-accent"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Перемещает цветовые области как единое целое (линии,
+                      силуэты)
+                    </p>
+                  </label>
+
+                  <label className="block mt-3">
+                    <span className="label-mono">
+                      Чувствительность · {colorThreshold}
+                    </span>
+                    <input
+                      type="range"
+                      min={10}
+                      max={80}
+                      step={5}
+                      value={colorThreshold}
+                      onChange={(e) =>
+                        setColorThreshold(Number(e.target.value))
+                      }
+                      className="mt-2 w-full accent-primary"
+                      disabled={stage === "generating"}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      10-20 = точное совпадение цвета, 50-80 = группирует
+                      похожие оттенки
+                    </p>
+                  </label>
+                </div>
+
+                {/* ===== REASSEMBLY ===== */}
+                <div className="border-t border-border pt-3">
+                  <h3 className="label-mono mb-3 text-sm font-semibold">
+                    🧱 Пересборка (Reassembly)
+                  </h3>
+
+                  <label className="block">
+                    <span className="label-mono">
+                      Сила · {reassembly}%
+                    </span>
                     <input
                       type="range"
                       min={0}
@@ -388,12 +477,14 @@ function GifVariationStudio() {
                       disabled={stage === "generating"}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Насколько сильно перемешиваются блоки/пиксели исходного кадра
+                      Разбивает на блоки и перемешивает (0 = выключено)
                     </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">Размер блока · {blockSize}px</span>
+                    <span className="label-mono">
+                      Размер блока · {blockSize}px
+                    </span>
                     <input
                       type="range"
                       min={1}
@@ -404,31 +495,29 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      1-2px = органичная "жидкая" пересборка, 8px+ = эффект кубизма/мозаики
-                    </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">Режим пересборки</span>
+                    <span className="label-mono">Режим</span>
                     <select
                       value={reassemblyMode}
-                      onChange={(e) => setReassemblyMode(e.target.value as ReassemblyMode)}
+                      onChange={(e) =>
+                        setReassemblyMode(e.target.value as ReassemblyMode)
+                      }
                       disabled={stage === "generating"}
                       className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
                     >
-                      <option value="scatter">🎲 Разброс (случайное перемещение)</option>
-                      <option value="flow">🌊 Поток (органическое движение)</option>
-                      <option value="swap">🔄 Обмен (соседние блоки меняются)</option>
-                      <option value="vortex">🌀 Вихрь (спиральное движение)</option>
+                      <option value="scatter">🎲 Разброс</option>
+                      <option value="flow">🌊 Поток</option>
+                      <option value="swap">🔄 Обмен</option>
+                      <option value="vortex">🌀 Вихрь</option>
                     </select>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Определяет, как блоки перемещаются по кадру
-                    </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">Сохранение силуэта · {silhouette}%</span>
+                    <span className="label-mono">
+                      Силуэт · {silhouette}%
+                    </span>
                     <input
                       type="range"
                       min={0}
@@ -439,9 +528,6 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-primary"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Удерживает внешние границы объекта, пересобирая только внутренности
-                    </p>
                   </label>
                 </div>
 
@@ -470,9 +556,6 @@ function GifVariationStudio() {
                     className="mt-2 w-full accent-primary"
                     disabled={stage === "generating"}
                   />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Generate between 1 and 100 variations
-                  </p>
                 </label>
               </div>
 
@@ -481,19 +564,28 @@ function GifVariationStudio() {
                 <ul className="space-y-2 text-xs text-muted-foreground">
                   <li className="flex gap-2">
                     <span className="text-primary">1.</span>
-                    <span>Пересборка кадра из собственных блоков с сохранением силуэта</span>
+                    <span>
+                      Сегментация по цвету: области одного цвета перемещаются
+                      целиком
+                    </span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">2.</span>
-                    <span>Perlin noise displacement для мягких "живых" краёв</span>
+                    <span>
+                      Perlin noise displacement для мягких "живых" краёв
+                    </span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">3.</span>
-                    <span>Временная модуляция (temporal consistency) для плавных циклов</span>
+                    <span>
+                      Временная модуляция для плавных циклов
+                    </span>
                   </li>
                   <li className="flex gap-2">
                     <span className="text-primary">4.</span>
-                    <span>HSL-трансформация цвета для изменения палитры при сохранении стиля</span>
+                    <span>
+                      HSL-трансформация цвета для смены палитры
+                    </span>
                   </li>
                 </ul>
               </div>

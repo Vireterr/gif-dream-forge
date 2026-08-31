@@ -1,3 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef } from "react";
 import type { VariationResult } from "../lib/gif/types";
 import { generateVariations } from "../lib/gif/variation-engine";
@@ -479,4 +480,6 @@ function GifVariationStudio() {
   );
 }
 
-export default GifVariationStudio;
+export const Route = createFileRoute("/")({
+  component: GifVariationStudio,
+});

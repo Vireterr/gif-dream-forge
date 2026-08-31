@@ -97,3 +97,12 @@ export interface ParsedGif {
   frames: GifFrame[];
   totalDelay: number;
 }
+export interface ReassemblyMap {
+  blockSize: number;
+  cols: number;
+  rows: number;
+  offsetX: Int16Array;
+  offsetY: Int16Array;
+  flags: Uint8Array;
+  blocks?: Array<{ x: number;
+}

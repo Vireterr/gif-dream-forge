@@ -507,10 +507,8 @@ function GifVariationStudio() {
                       disabled={stage === "generating"}
                       className="mt-2 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm"
                     >
-                      <option value="scatter">🎲 Разброс</option>
-                      <option value="flow">🌊 Поток</option>
-                      <option value="swap">🔄 Обмен</option>
-                      <option value="vortex">🌀 Вихрь</option>
+                      <option value="irregular-blocks">🧱 Неправильные блоки (разного размера)</option>
+                      <option value="connected-regions">🎨 Связные области (по цвету)</option>
                     </select>
                   </label>
 

@@ -81,7 +81,7 @@ export async function generateVariations(
           currentFrame,
           colorSegStrength,
           variationSeed,  // ← ОДИН seed для всех кадров
-          colorThreshold
+          numColors
         );
         currentFrame = {
           rgba: segRgba,

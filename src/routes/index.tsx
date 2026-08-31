@@ -485,7 +485,7 @@ function GifVariationStudio() {
                     <input
                       type="range"
                       min={1}
-                      max={16}
+                      max={128}
                       step={1}
                       value={blockSize}
                       onChange={(e) => setBlockSize(Number(e.target.value))}

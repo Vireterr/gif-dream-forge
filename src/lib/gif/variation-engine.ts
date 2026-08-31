@@ -56,7 +56,6 @@ export async function generateVariations(
     ? computeSilhouetteMask(originalFrames[0]!).data
     : undefined;
 
-  
   const results: VariationResult[] = [];
   
   // Generate each variation
@@ -84,6 +83,11 @@ export async function generateVariations(
       variationSeed,
       allowMirror
     );
+
+    // 🆕 Generate reassembly map ONCE per variation (applied to all frames)
+    const reassemblyMap = reassemblyStrength > 0
+      ? generateReassemblyMap(width, height, blockSize, reassemblyStrength, variationSeed)
+      : null;
     
     // Calculate temporal amplitude based on similarity
     const temporalAmplitude = ((100 - flowSim) / 100) * 5;
@@ -94,16 +98,33 @@ export async function generateVariations(
     for (let f = 0; f < totalFrames; f++) {
       const originalFrame = originalFrames[f]!;
 
-      // 1. Geometry / shape warp
-      const geoRgba = applyGeometryToFrame(originalFrame, geometryTransform, f, totalFrames);
+      // 1. 🆕 Reassembly (block/pixel shuffle) — applied FIRST
+      let currentFrame: Frame = originalFrame;
+      if (reassemblyMap) {
+        const reassembledRgba = applyReassemblyToFrame(
+          originalFrame,
+          reassemblyMap,
+          silhouetteMask,
+          silhouetteStrength
+        );
+        currentFrame = {
+          rgba: reassembledRgba,
+          delay: originalFrame.delay,
+          width: originalFrame.width,
+          height: originalFrame.height
+        };
+      }
+
+      // 2. Geometry / shape warp
+      const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
       const geoFrame: Frame = {
         rgba: geoRgba,
-        delay: originalFrame.delay,
-        width: originalFrame.width,
-        height: originalFrame.height
+        delay: currentFrame.delay,
+        width: currentFrame.width,
+        height: currentFrame.height
       };
 
-      // 2. Organic noise displacement with temporal consistency
+      // 3. Organic noise displacement with temporal consistency
       const modulatedField = applyTemporalConsistency(
         displacementField,
         f,
@@ -114,19 +135,19 @@ export async function generateVariations(
       
       const warpedFrame: Frame = {
         rgba: warpedRgba,
-        delay: originalFrame.delay,
-        width: originalFrame.width,
-        height: originalFrame.height
+        delay: geoFrame.delay,
+        width: geoFrame.width,
+        height: geoFrame.height
       };
       
-      // 3. Color transform
+      // 4. Color transform
       const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
       
       variationFrames.push({
         rgba: coloredRgba,
-        delay: originalFrame.delay,
-        width: originalFrame.width,
-        height: originalFrame.height
+        delay: warpedFrame.delay,
+        width: warpedFrame.width,
+        height: warpedFrame.height
       });
       
       // Yield every few frames to prevent blocking
@@ -154,10 +175,8 @@ export async function generateVariations(
   return results;
 }
 
-
 /**
  * Preview a single variation without encoding
- * Useful for showing a preview before generating all variations
  */
 export async function previewVariation(
   file: File,
@@ -213,9 +232,9 @@ export async function previewVariation(
     
     previewFrames.push({
       rgba: coloredRgba,
-      delay: originalFrame.delay,
-      width: originalFrame.width,
-      height: originalFrame.height
+      delay: warpedFrame.delay,
+      width: warpedFrame.width,
+      height: warpedFrame.height
     });
   }
   

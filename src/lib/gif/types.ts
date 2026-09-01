@@ -5,6 +5,55 @@ export interface Frame {
   height: number;
 }
 
+export interface DisplacementField {
+  dx: Float32Array;
+  dy: Float32Array;
+  width: number;
+  height: number;
+}
+
+export interface ColorTransform {
+  hueShift: number;
+  saturationShift: number;
+  lightnessShift: number;
+  contrastShift: number;
+  rCurve: Float32Array;
+  gCurve: Float32Array;
+  bCurve: Float32Array;
+}
+
+export interface GeometryTransform {
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  skewX: number;
+  skewY: number;
+  swirlAmount: number;
+  swirlCenterX: number;
+  swirlCenterY: number;
+}
+
+export interface MotionMask {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export interface ReassemblyMap {
+  blockSize: number;
+  cols: number;
+  rows: number;
+  offsetX: Int16Array;
+  offsetY: Int16Array;
+  flags: Uint8Array;
+}
+
+export interface SilhouetteMask {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
 export interface TargetColor {
   id: string;
   r: number;
@@ -12,6 +61,16 @@ export interface TargetColor {
   b: number;
   tolerance: number;
   enabled: boolean;
+}
+
+export type ReassemblyMode = 'blocks' | 'stripes' | 'geometric' | 'organic';
+
+export interface ReassemblyConfig {
+  blocks: { enabled: boolean; strength: number };
+  stripes: { enabled: boolean; strength: number };
+  geometric: { enabled: boolean; strength: number };
+  organic: { enabled: boolean; strength: number };
+  blendSmoothness: number;
 }
 
 export interface VariationConfig {
@@ -24,37 +83,11 @@ export interface VariationConfig {
   silhouette?: number;
   reassembly?: number;
   blockSize?: number;
+  reassemblyConfig?: ReassemblyConfig;
   colorSegmentation?: number;
   numColors?: number;
   targetColorsMode?: boolean;
   targetColors?: TargetColor[];
-}
-
-export interface ReassemblyMap {
-  blockSize: number;
-  cols: number;
-  rows: number;
-  offsetX: Int16Array;
-  offsetY: Int16Array;
-  flags: Uint8Array;
-}
-
-export interface GeometryTransform {
-  rotation: number;
-  scale: number;
-  scaleY: number;
-  skewX: number;
-  skewY: number;
-  shiftX: number;
-  shiftY: number;
-  swirl: number;
-  swirlRadius: number;
-  rippleAmp: number;
-  rippleFreq: number;
-  ripplePhase: number;
-  bulge: number;
-  mirror: boolean;
-  breathing: number;
 }
 
 export interface VariationResult {
@@ -62,48 +95,4 @@ export interface VariationResult {
   url: string;
   bytes: number;
   seed: number;
-}
-
-export interface DisplacementField {
-  dx: Float32Array;
-  dy: Float32Array;
-  width: number;
-  height: number;
-}
-
-export interface ColorTransform {
-  hueShift: number;
-  saturationMul: number;
-  lightnessShift: number;
-  contrastMul: number;
-}
-
-export interface MotionMask {
-  data: Uint8Array;
-  width: number;
-  height: number;
-}
-
-export interface GifDescriptor {
-  width: number;
-  height: number;
-  globalColorTable?: number[][];
-  backgroundColorIndex?: number;
-  pixelAspectRatio?: number;
-}
-
-export interface GifFrame {
-  imageData: ImageData;
-  delay: number;
-  disposalType?: number;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-export interface ParsedGif {
-  descriptor: GifDescriptor;
-  frames: GifFrame[];
-  totalDelay: number;
 }

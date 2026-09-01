@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef } from "react";
-import type { VariationResult, TargetColor } from "../lib/gif/types";
+import type { VariationResult, TargetColor, ReassemblyConfig } from "../lib/gif/types";
 import { generateVariations } from "../lib/gif/variation-engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
@@ -54,7 +54,6 @@ function GifVariationStudio() {
   const [geometry, setGeometry] = useState(80);
   const [color, setColor] = useState(80);
   const [flow, setFlow] = useState(70);
-  const [reassembly, setReassembly] = useState(70);
   const [blockSize, setBlockSize] = useState(50);
   const [silhouette, setSilhouette] = useState(50);
   const [colorSegmentation, setColorSegmentation] = useState(80);
@@ -64,6 +63,15 @@ function GifVariationStudio() {
   ]);
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
+
+  // Reassembly config with 4 modes
+  const [reassemblyConfig, setReassemblyConfig] = useState<ReassemblyConfig>({
+    blocks: { enabled: true, strength: 50 },
+    stripes: { enabled: false, strength: 50 },
+    geometric: { enabled: false, strength: 50 },
+    organic: { enabled: false, strength: 50 },
+    blendSmoothness: 50,
+  });
 
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VariationResult[]>([]);
@@ -139,7 +147,6 @@ function GifVariationStudio() {
   }
 
   async function generate() {
-    console.log('🔧 PARAMS:', { reassembly, blockSize, silhouette, colorSegmentation, targetColorsMode, targetColors: targetColors.length })
     if (!file || !originalInfo) return;
     cancelRef.current = false;
     setStage("generating");
@@ -157,12 +164,12 @@ function GifVariationStudio() {
           color,
           flow,
           mirror,
-          reassembly,
           blockSize,
           silhouette,
           colorSegmentation,
           targetColorsMode,
           targetColors,
+          reassemblyConfig,
         },
         (current, total) => setProgress(current / total),
         () => cancelRef.current
@@ -200,6 +207,13 @@ function GifVariationStudio() {
 
   function removeColor(id: string) {
     setTargetColors((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  function updateReassemblyMode(mode: keyof Omit<ReassemblyConfig, 'blendSmoothness'>, field: 'enabled' | 'strength', value: boolean | number) {
+    setReassemblyConfig((prev) => ({
+      ...prev,
+      [mode]: { ...prev[mode], [field]: value },
+    }));
   }
 
   return (
@@ -405,9 +419,6 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Перемещает выбранные цвета как единые объекты
-                    </p>
                   </label>
 
                   <label className="flex items-center justify-between mt-3">
@@ -497,33 +508,135 @@ function GifVariationStudio() {
                             </button>
                           </div>
                         ))}
-
-                        {targetColors.length === 0 && (
-                          <p className="text-xs text-muted-foreground italic">
-                            Нажми на цветные квадратики выше
-                          </p>
-                        )}
                       </div>
                     </div>
                   )}
                 </div>
 
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка (Рандом-редактор)</h3>
 
-                  <label className="block">
-                    <span className="label-mono">Сила · {reassembly}%</span>
+                  {/* Blocks mode */}
+                  <div className="mb-3 rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={reassemblyConfig.blocks.enabled}
+                          onChange={(e) => updateReassemblyMode('blocks', 'enabled', e.target.checked)}
+                          disabled={stage === "generating"}
+                          className="accent-accent"
+                        />
+                        <span className="label-mono text-sm">🔲 Блоки</span>
+                      </label>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {reassemblyConfig.blocks.strength}%
+                      </span>
+                    </div>
                     <input
                       type="range" min={0} max={100} step={5}
-                      value={reassembly}
-                      onChange={(e) => setReassembly(Number(e.target.value))}
-                      className="mt-2 w-full accent-accent"
+                      value={reassemblyConfig.blocks.strength}
+                      onChange={(e) => updateReassemblyMode('blocks', 'strength', Number(e.target.value))}
+                      className="w-full accent-accent"
+                      disabled={stage === "generating" || !reassemblyConfig.blocks.enabled}
+                    />
+                  </div>
+
+                  {/* Stripes mode */}
+                  <div className="mb-3 rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={reassemblyConfig.stripes.enabled}
+                          onChange={(e) => updateReassemblyMode('stripes', 'enabled', e.target.checked)}
+                          disabled={stage === "generating"}
+                          className="accent-accent"
+                        />
+                        <span className="label-mono text-sm">📊 Полосы</span>
+                      </label>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {reassemblyConfig.stripes.strength}%
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={0} max={100} step={5}
+                      value={reassemblyConfig.stripes.strength}
+                      onChange={(e) => updateReassemblyMode('stripes', 'strength', Number(e.target.value))}
+                      className="w-full accent-accent"
+                      disabled={stage === "generating" || !reassemblyConfig.stripes.enabled}
+                    />
+                  </div>
+
+                  {/* Geometric mode */}
+                  <div className="mb-3 rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={reassemblyConfig.geometric.enabled}
+                          onChange={(e) => updateReassemblyMode('geometric', 'enabled', e.target.checked)}
+                          disabled={stage === "generating"}
+                          className="accent-accent"
+                        />
+                        <span className="label-mono text-sm">🔷 Геометрия</span>
+                      </label>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {reassemblyConfig.geometric.strength}%
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={0} max={100} step={5}
+                      value={reassemblyConfig.geometric.strength}
+                      onChange={(e) => updateReassemblyMode('geometric', 'strength', Number(e.target.value))}
+                      className="w-full accent-accent"
+                      disabled={stage === "generating" || !reassemblyConfig.geometric.enabled}
+                    />
+                  </div>
+
+                  {/* Organic mode */}
+                  <div className="mb-3 rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={reassemblyConfig.organic.enabled}
+                          onChange={(e) => updateReassemblyMode('organic', 'enabled', e.target.checked)}
+                          disabled={stage === "generating"}
+                          className="accent-accent"
+                        />
+                        <span className="label-mono text-sm">🫧 Произвольные</span>
+                      </label>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {reassemblyConfig.organic.strength}%
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={0} max={100} step={5}
+                      value={reassemblyConfig.organic.strength}
+                      onChange={(e) => updateReassemblyMode('organic', 'strength', Number(e.target.value))}
+                      className="w-full accent-accent"
+                      disabled={stage === "generating" || !reassemblyConfig.organic.enabled}
+                    />
+                  </div>
+
+                  {/* Blend smoothness */}
+                  <label className="block mt-3">
+                    <span className="label-mono">Плавность переходов · {reassemblyConfig.blendSmoothness}%</span>
+                    <input
+                      type="range" min={1} max={100} step={1}
+                      value={reassemblyConfig.blendSmoothness}
+                      onChange={(e) => setReassemblyConfig((prev) => ({ ...prev, blendSmoothness: Number(e.target.value) }))}
+                      className="mt-2 w-full accent-primary"
                       disabled={stage === "generating"}
                     />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Как плавно режимы перетекают друг в друга
+                    </p>
                   </label>
 
                   <label className="block mt-3">
-                    <span className="label-mono">Размер блока · {blockSize}% от GIF</span>
+                    <span className="label-mono">Размер · {blockSize}% от GIF</span>
                     <input
                       type="range" min={0} max={100} step={1}
                       value={blockSize}
@@ -531,9 +644,6 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-accent"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      0% = выкл, 50% = блоки в половину GIF, 100% = весь GIF одним блоком
-                    </p>
                   </label>
 
                   <label className="block mt-3">
@@ -545,9 +655,6 @@ function GifVariationStudio() {
                       className="mt-2 w-full accent-primary"
                       disabled={stage === "generating"}
                     />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Защищает контуры объектов от перемешивания
-                    </p>
                   </label>
                 </div>
 

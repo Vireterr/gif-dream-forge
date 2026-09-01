@@ -5,7 +5,7 @@ import { generateDisplacementField, warpFrame, applyTemporalConsistency } from '
 import { generateColorTransform, applyColorTransformToFrame } from './color-transform';
 import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
-import { generateReassemblyMap, applyReassemblyToFrame } from './reassemble';
+import { applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
 import { applyColorCollage } from './color-segmentation';
 
@@ -24,7 +24,6 @@ export async function generateVariations(
   const geometryStrength = applySimilarity(config.geometry ?? 0, similarity);
   const colorStrength = applySimilarity(config.color ?? 0, similarity);
   const flowStrength = applySimilarity(config.flow ?? 0, similarity);
-  const reassemblyStrength = applySimilarity(config.reassembly ?? 0, similarity);
   const colorSegStrength = applySimilarity(config.colorSegmentation ?? 0, similarity);
   const silhouetteStrength = applySimilarity(config.silhouette ?? 0, similarity);
   
@@ -32,6 +31,14 @@ export async function generateVariations(
   const blockSize = config.blockSize ?? 50;
   const targetColorsMode = config.targetColorsMode ?? true;
   const targetColors = config.targetColors ?? [];
+  
+  const reassemblyConfig = config.reassemblyConfig ?? {
+    blocks: { enabled: false, strength: 0 },
+    stripes: { enabled: false, strength: 0 },
+    geometric: { enabled: false, strength: 0 },
+    organic: { enabled: false, strength: 0 },
+    blendSmoothness: 50,
+  };
 
   const originalFrames = await decodeGif(file);
   if (originalFrames.length === 0) throw new Error('No frames found in GIF');
@@ -67,17 +74,10 @@ export async function generateVariations(
       ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
       : null;
 
-    const reassemblyMap = reassemblyStrength > 0 && blockSize > 0
-      ? generateReassemblyMap(
-          width, 
-          height, 
-          blockSize, 
-          reassemblyStrength, 
-          variationSeed,
-          silhouetteMask,
-          silhouetteStrength
-        )
-      : null;
+    const anyReassemblyEnabled = reassemblyConfig.blocks.enabled || 
+                                  reassemblyConfig.stripes.enabled || 
+                                  reassemblyConfig.geometric.enabled || 
+                                  reassemblyConfig.organic.enabled;
 
     const enabledTargets = targetColorsMode
       ? targetColors.filter((t) => t.enabled)
@@ -101,9 +101,9 @@ export async function generateVariations(
         };
       }
 
-      if (reassemblyMap) {
+      if (anyReassemblyEnabled && blockSize > 0) {
         const reassembledRgba = applyReassemblyToFrame(
-          currentFrame, reassemblyMap, silhouetteMask, silhouetteStrength
+          currentFrame, blockSize, reassemblyConfig, variationSeed, silhouetteMask, silhouetteStrength
         );
         currentFrame = {
           rgba: reassembledRgba,

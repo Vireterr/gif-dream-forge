@@ -65,12 +65,18 @@ export interface TargetColor {
 
 export type ReassemblyMode = 'blocks' | 'stripes' | 'geometric' | 'organic';
 
+export interface ModeConfig {
+  enabled: boolean;
+  strength: number;  // 0-100
+  size: number;      // 0-100 (размер элемента)
+}
+
 export interface ReassemblyConfig {
-  blocks: { enabled: boolean; strength: number };
-  stripes: { enabled: boolean; strength: number };
-  geometric: { enabled: boolean; strength: number };
-  organic: { enabled: boolean; strength: number };
-  blendSmoothness: number;
+  blocks: ModeConfig;
+  stripes: ModeConfig;
+  geometric: ModeConfig;
+  organic: ModeConfig;
+  blendSmoothness: number; // 0-100
 }
 
 export interface VariationConfig {

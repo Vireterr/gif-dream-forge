@@ -1,63 +1,18 @@
 /**
- * Reassembly with 4 DISTINCT modes + Voronoi-based blending:
- * - Blocks: square mosaic tiles
- * - Stripes: horizontal OR vertical slices (random per stripe)
- * - Geometric: scattered triangles/diamonds/hexagons
- * - Organic: Voronoi cells (paper-cut abstract shapes)
- * 
- * Blending uses Voronoi diagram with Simplex-distorted distances
- * for smooth organic boundaries between modes.
+ * Reassembly with TRUE backward mapping — no ghosting, no stains.
+ * For each output pixel, we find where it should come FROM in the source.
  */
 
 import type { Frame, ReassemblyConfig } from './types';
 import { mulberry32 } from '../utils/noise';
 import { SimplexNoise } from './simplex';
 
-// ============ PERLIN NOISE ============
-class PerlinNoise {
-  private perm: Uint8Array;
-  constructor(seed: number) {
-    const rand = mulberry32(seed);
-    this.perm = new Uint8Array(512);
-    const p = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) p[i] = i;
-    for (let i = 255; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [p[i], p[j]] = [p[j], p[i]];
-    }
-    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
-  }
-  private fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
-  private lerp(a: number, b: number, t: number) { return a + t * (b - a); }
-  private grad(hash: number, x: number, y: number) {
-    const h = hash & 3;
-    const u = h < 2 ? x : y;
-    const v = h < 2 ? y : x;
-    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
-  }
-  noise(x: number, y: number): number {
-    const X = Math.floor(x) & 255;
-    const Y = Math.floor(y) & 255;
-    x -= Math.floor(x);
-    y -= Math.floor(y);
-    const u = this.fade(x);
-    const v = this.fade(y);
-    const A = this.perm[X] + Y;
-    const B = this.perm[X + 1] + Y;
-    return this.lerp(
-      this.lerp(this.grad(this.perm[A], x, y), this.grad(this.perm[B], x - 1, y), u),
-      this.lerp(this.grad(this.perm[A + 1], x, y - 1), this.grad(this.perm[B + 1], x - 1, y - 1), u),
-      v
-    );
-  }
-}
-
 // ============ VORONOI BLENDING ============
 interface VoronoiCell {
   x: number;
   y: number;
   mode: 'blocks' | 'stripes' | 'geometric' | 'organic';
-  seed: number; // for deterministic per-cell random
+  seed: number;
 }
 
 function generateVoronoiCells(
@@ -69,12 +24,9 @@ function generateVoronoiCells(
   const rand = mulberry32(seed);
   const cells: VoronoiCell[] = [];
 
-  // Calculate how many cells based on image size and blend smoothness
-  // More smoothness = fewer, larger cells
   const baseCellSize = Math.max(50, Math.min(width, height) * (0.15 + (1 - config.blendSmoothness / 100) * 0.3));
   const numCells = Math.round((width * height) / (baseCellSize * baseCellSize));
 
-  // Distribute cells proportionally to enabled modes' strengths
   const enabledModes: Array<{ mode: 'blocks' | 'stripes' | 'geometric' | 'organic'; weight: number }> = [];
   if (config.blocks.enabled && config.blocks.strength > 0) {
     enabledModes.push({ mode: 'blocks', weight: config.blocks.strength });
@@ -93,7 +45,6 @@ function generateVoronoiCells(
 
   const totalWeight = enabledModes.reduce((s, m) => s + m.weight, 0);
 
-  // Generate cells for each mode proportionally
   for (const em of enabledModes) {
     const count = Math.max(1, Math.round(numCells * (em.weight / totalWeight)));
     for (let i = 0; i < count; i++) {
@@ -109,8 +60,7 @@ function generateVoronoiCells(
   return cells;
 }
 
-// Find the dominant mode for a pixel using Voronoi + Simplex distortion
-function findDominantMode(
+function findDominantCell(
   x: number, y: number,
   cells: VoronoiCell[],
   simplex: SimplexNoise,
@@ -121,7 +71,6 @@ function findDominantMode(
   let nearest: VoronoiCell | null = null;
   let nearestDist = Infinity;
 
-  // Simplex distortion field for organic boundaries
   const distFreq = 0.008;
   const distX = simplex.noise(x * distFreq, y * distFreq) * distortionStrength;
   const distY = simplex.noise(x * distFreq + 100, y * distFreq + 100) * distortionStrength;
@@ -132,7 +81,7 @@ function findDominantMode(
   for (const cell of cells) {
     const dx = distortedX - cell.x;
     const dy = distortedY - cell.y;
-    const dist = dx * dx + dy * dy; // squared distance is enough for comparison
+    const dist = dx * dx + dy * dy;
     if (dist < nearestDist) {
       nearestDist = dist;
       nearest = cell;
@@ -142,310 +91,113 @@ function findDominantMode(
   return nearest;
 }
 
-// ============ BLOCKS MODE ============
-function applyBlocksMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number,
-  cellSeed: number
-): void {
-  const rand = mulberry32(cellSeed);
-  const k = strength / 100;
+// ============ PRECOMPUTE MODE OFFSETS ============
+// For backward mapping, we need to know: for each block/stripe/cell, what's its offset?
 
+interface BlockInfo {
+  bx: number; by: number;
+  ox: number; oy: number;
+  blockSize: number;
+}
+
+interface StripeInfo {
+  idx: number;
+  isHorizontal: boolean;
+  offset: number;
+  stripeWidth: number;
+}
+
+interface VoronoiOrganicCell {
+  cx: number; cy: number;
+  ox: number; oy: number;
+}
+
+function precomputeBlocks(
+  width: number, height: number,
+  sizePercent: number, strength: number,
+  seed: number
+): BlockInfo[] {
+  const rand = mulberry32(seed);
+  const k = strength / 100;
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const blockSize = Math.max(4, Math.round(Math.min(width, height) * percent));
   const cols = Math.max(1, Math.ceil(width / blockSize));
   const rows = Math.max(1, Math.ceil(height / blockSize));
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
 
+  const blocks: BlockInfo[] = [];
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
       if (rand() < 0.7 + k * 0.3) {
-        const x0 = bx * blockSize;
-        const y0 = by * blockSize;
-        const x1 = Math.min(width, x0 + blockSize);
-        const y1 = Math.min(height, y0 + blockSize);
-        const w = x1 - x0;
-        const h = y1 - y0;
-
         const angle = rand() * Math.PI * 2;
         const dist = (0.3 + rand() * 0.7) * maxMove;
-        const ox = Math.round(Math.cos(angle) * dist);
-        const oy = Math.round(Math.sin(angle) * dist);
-
-        const pixels = new Uint8ClampedArray(w * h * 4);
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            const si = (y * width + x) * 4;
-            const di = ((y - y0) * w + (x - x0)) * 4;
-            pixels[di] = src[si];
-            pixels[di + 1] = src[si + 1];
-            pixels[di + 2] = src[si + 2];
-            pixels[di + 3] = src[si + 3];
-          }
-        }
-
-        const newX = ((x0 + ox * blockSize) % width + width) % width;
-        const newY = ((y0 + oy * blockSize) % height + height) % height;
-
-        for (let ly = 0; ly < h; ly++) {
-          for (let lx = 0; lx < w; lx++) {
-            const dx = ((newX + lx) % width + width) % width;
-            const dy = ((newY + ly) % height + height) % height;
-            const di = (dy * width + dx) * 4;
-            const si = (ly * w + lx) * 4;
-            out[di] = pixels[si];
-            out[di + 1] = pixels[si + 1];
-            out[di + 2] = pixels[si + 2];
-            out[di + 3] = pixels[si + 3];
-          }
-        }
+        blocks.push({
+          bx, by,
+          ox: Math.round(Math.cos(angle) * dist),
+          oy: Math.round(Math.sin(angle) * dist),
+          blockSize,
+        });
       }
     }
   }
+  return blocks;
 }
 
-// ============ STRIPES MODE (FIXED: horizontal OR vertical) ============
-function applyStripesMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number,
-  cellSeed: number
-): void {
-  const rand = mulberry32(cellSeed);
+function precomputeStripes(
+  width: number, height: number,
+  sizePercent: number, strength: number,
+  seed: number
+): { isHorizontal: boolean; stripes: StripeInfo[] } {
+  const rand = mulberry32(seed);
   const k = strength / 100;
-
   const percent = Math.max(2, Math.min(50, sizePercent)) / 100;
   const stripeWidth = Math.max(2, Math.round(Math.min(width, height) * percent));
   const maxOffset = Math.round(k * Math.max(width, height) * 0.5);
 
-  // 🔧 ИСПРАВЛЕНО: случайное направление для каждой полосы
   const isHorizontal = rand() > 0.5;
   const baseDim = isHorizontal ? height : width;
 
+  const stripes: StripeInfo[] = [];
   let pos = 0;
+  let idx = 0;
   while (pos < baseDim) {
     const thickness = Math.max(1, Math.round(stripeWidth * (0.7 + rand() * 0.6)));
-    const end = Math.min(baseDim, pos + thickness);
     const offset = Math.round((rand() * 2 - 1) * maxOffset);
-
-    if (offset !== 0) {
-      if (isHorizontal) {
-        // Horizontal stripe: shift left/right
-        for (let y = pos; y < end; y++) {
-          for (let x = 0; x < width; x++) {
-            const si = (y * width + x) * 4;
-            const newX = ((x + offset) % width + width) % width;
-            const di = (y * width + newX) * 4;
-            out[di] = src[si];
-            out[di + 1] = src[si + 1];
-            out[di + 2] = src[si + 2];
-            out[di + 3] = src[si + 3];
-          }
-        }
-      } else {
-        // Vertical stripe: shift up/down
-        for (let x = pos; x < end; x++) {
-          for (let y = 0; y < height; y++) {
-            const si = (y * width + x) * 4;
-            const newY = ((y + offset) % height + height) % height;
-            const di = (newY * width + x) * 4;
-            out[di] = src[si];
-            out[di + 1] = src[si + 1];
-            out[di + 2] = src[si + 2];
-            out[di + 3] = src[si + 3];
-          }
-        }
-      }
-    }
-
-    pos = end;
+    stripes.push({ idx, isHorizontal, offset, stripeWidth: thickness });
+    pos += thickness;
+    idx++;
   }
+  return { isHorizontal, stripes };
 }
 
-// ============ GEOMETRIC MODE ============
-function applyGeometricMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number,
-  cellSeed: number
-): void {
-  const rand = mulberry32(cellSeed);
+function precomputeOrganicCells(
+  width: number, height: number,
+  sizePercent: number, strength: number,
+  seed: number
+): VoronoiOrganicCell[] {
+  const rand = mulberry32(seed);
   const k = strength / 100;
-
-  const percent = Math.max(3, Math.min(40, sizePercent)) / 100;
-  const baseSize = Math.max(8, Math.round(Math.min(width, height) * percent));
-  const maxMove = Math.round(k * baseSize * 1.5);
-  const numShapes = Math.max(5, Math.round((width * height) / (baseSize * baseSize) * 0.5));
-
-  interface Shape { cx: number; cy: number; size: number; type: number; rotation: number; ox: number; oy: number }
-  const shapes: Shape[] = [];
-
-  for (let i = 0; i < numShapes; i++) {
-    const cx = rand() * width;
-    const cy = rand() * height;
-    const size = baseSize * (0.6 + rand() * 0.8);
-    const types = [1, 2, 3];
-    const type = types[Math.floor(rand() * 3)];
-    const rotation = rand() * Math.PI * 2;
-    const angle = rand() * Math.PI * 2;
-    const dist = (0.3 + rand() * 0.7) * maxMove;
-
-    shapes.push({
-      cx, cy, size, type, rotation,
-      ox: Math.round(Math.cos(angle) * dist),
-      oy: Math.round(Math.sin(angle) * dist),
-    });
-  }
-
-  const isInside = (px: number, py: number, s: Shape) => {
-    const cos = Math.cos(-s.rotation);
-    const sin = Math.sin(-s.rotation);
-    const pdx = px - s.cx;
-    const pdy = py - s.cy;
-    const rx = Math.abs(pdx * cos - pdy * sin);
-    const ry = Math.abs(pdx * sin + pdy * cos);
-
-    if (s.type === 1) {
-      const h = s.size * 1.2;
-      if (ry < -h / 2 || ry > h / 2) return false;
-      return Math.abs(rx) <= (s.size / 2) * (1 - (ry + h / 2) / h);
-    }
-    if (s.type === 2) {
-      return (rx / s.size + ry / s.size) <= 1;
-    }
-    if (s.type === 3) {
-      return rx <= s.size * 0.866 && ry <= s.size * 0.5 && (rx * 0.5 + ry * 0.866) <= s.size * 0.866;
-    }
-    return false;
-  };
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      for (const s of shapes) {
-        if (isInside(x, y, s)) {
-          const newX = ((x + s.ox) % width + width) % width;
-          const newY = ((y + s.oy) % height + height) % height;
-          const si = (y * width + x) * 4;
-          const di = (newY * width + newX) * 4;
-          out[di] = src[si];
-          out[di + 1] = src[si + 1];
-          out[di + 2] = src[si + 2];
-          out[di + 3] = src[si + 3];
-          break;
-        }
-      }
-    }
-  }
-}
-
-// ============ ORGANIC MODE (VORONOI CELLS - paper-cut shapes) ============
-function applyOrganicMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number,
-  cellSeed: number
-): void {
-  const rand = mulberry32(cellSeed);
-  const k = strength / 100;
-
-  // Number of Voronoi cells based on sizePercent
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const baseCellSize = Math.max(10, Math.round(Math.min(width, height) * percent));
   const numCells = Math.max(3, Math.round((width * height) / (baseCellSize * baseCellSize) * 0.7));
-
-  // Generate Voronoi cell centers
-  interface VCell { cx: number; cy: number; ox: number; oy: number }
-  const vcells: VCell[] = [];
   const maxMove = Math.round(k * baseCellSize * 1.5);
 
+  const cells: VoronoiOrganicCell[] = [];
   for (let i = 0; i < numCells; i++) {
     const cx = rand() * width;
     const cy = rand() * height;
     const angle = rand() * Math.PI * 2;
     const dist = (0.3 + rand() * 0.7) * maxMove;
-    vcells.push({
+    cells.push({
       cx, cy,
       ox: Math.round(Math.cos(angle) * dist),
       oy: Math.round(Math.sin(angle) * dist),
     });
   }
-
-  // For each pixel, find nearest Voronoi cell and move with it
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let nearestIdx = 0;
-      let nearestDist = Infinity;
-
-      for (let i = 0; i < vcells.length; i++) {
-        const dx = x - vcells[i].cx;
-        const dy = y - vcells[i].cy;
-        const dist = dx * dx + dy * dy;
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestIdx = i;
-        }
-      }
-
-      const cell = vcells[nearestIdx];
-      const newX = ((x + cell.ox) % width + width) % width;
-      const newY = ((y + cell.oy) % height + height) % height;
-      const si = (y * width + x) * 4;
-      const di = (newY * width + newX) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
-    }
-  }
+  return cells;
 }
 
-// ============ SILHOUETTE PROTECTION ============
-function applySilhouetteProtection(
-  out: Uint8ClampedArray,
-  src: Uint8ClampedArray,
-  width: number,
-  height: number,
-  silhouetteMask: Uint8Array,
-  silhouetteStrength: number
-): void {
-  const guard = Math.min(100, silhouetteStrength) / 100;
-  const threshold = 0.3 * guard;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const edgeValue = silhouetteMask[idx] / 255;
-      
-      if (edgeValue > threshold) {
-        // Restore original pixel at silhouette edges
-        const di = idx * 4;
-        out[di] = src[di];
-        out[di + 1] = src[di + 1];
-        out[di + 2] = src[di + 2];
-        out[di + 3] = src[di + 3];
-      }
-    }
-  }
-}
-
-// ============ MAIN APPLY FUNCTION ============
+// ============ MAIN APPLY FUNCTION (BACKWARD MAPPING) ============
 export function applyReassemblyToFrame(
   frame: Frame,
   _blockSize: number,
@@ -465,106 +217,117 @@ export function applyReassemblyToFrame(
     return out;
   }
 
-  // Generate Voronoi cells for blending
+  // Generate Voronoi cells for mode blending
   const cells = generateVoronoiCells(width, height, config, seed);
   const simplex = new SimplexNoise(seed);
-  const distortionStrength = 50 + config.blendSmoothness * 2; // 50-250 pixels
+  const distortionStrength = 50 + config.blendSmoothness * 2;
 
-  // Start with original image
-  out.set(src);
+  // Precompute all mode data (offsets for each block/stripe/cell)
+  const blocksData = config.blocks.enabled && config.blocks.strength > 0
+    ? precomputeBlocks(width, height, config.blocks.size, config.blocks.strength, seed)
+    : [];
+  const stripesData = config.stripes.enabled && config.stripes.strength > 0
+    ? precomputeStripes(width, height, config.stripes.size, config.stripes.strength, seed + 1)
+    : null;
+  const organicCells = config.organic.enabled && config.organic.strength > 0
+    ? precomputeOrganicCells(width, height, config.organic.size, config.organic.strength, seed + 3)
+    : [];
 
-  // Apply each mode to pixels that belong to its Voronoi cells
-  // We track which pixels have been processed
-  const processed = new Uint8Array(width * height);
+  // Geometric: use simplex for per-pixel displacement
+  const geoK = config.geometric.enabled ? config.geometric.strength / 100 : 0;
+  const geoPercent = config.geometric.enabled ? Math.max(3, Math.min(40, config.geometric.size)) / 100 : 0;
+  const geoBaseSize = Math.max(8, Math.round(Math.min(width, height) * geoPercent));
+  const geoMaxMove = Math.round(geoK * geoBaseSize * 1.5);
 
+  // 🔧 BACKWARD MAPPING: for each output pixel, find where to sample from source
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const cell = findDominantMode(x, y, cells, simplex, distortionStrength);
-      if (!cell) continue;
-
       const idx = y * width + x;
-      processed[idx] = 1;
+      const di = idx * 4;
 
-      // Apply the mode effect for this pixel
-      const si = idx * 4;
-      let newX = x;
-      let newY = y;
+      // Find which mode zone this pixel belongs to
+      const cell = findDominantCell(x, y, cells, simplex, distortionStrength);
+      
+      let srcX = x;
+      let srcY = y;
 
-      switch (cell.mode) {
-        case 'blocks': {
-          const k = config.blocks.strength / 100;
-          const percent = Math.max(5, Math.min(80, config.blocks.size)) / 100;
-          const blockSize = Math.max(4, Math.round(Math.min(width, height) * percent));
-          const bx = Math.floor(x / blockSize);
-          const by = Math.floor(y / blockSize);
-          const blockRand = mulberry32(cell.seed + bx * 1000 + by);
-          const cols = Math.max(1, Math.ceil(width / blockSize));
-          const rows = Math.max(1, Math.ceil(height / blockSize));
-          const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
-
-          if (blockRand() < 0.7 + k * 0.3) {
-            const angle = blockRand() * Math.PI * 2;
-            const dist = (0.3 + blockRand() * 0.7) * maxMove;
-            const ox = Math.round(Math.cos(angle) * dist);
-            const oy = Math.round(Math.sin(angle) * dist);
-            newX = ((x + ox * blockSize) % width + width) % width;
-            newY = ((y + oy * blockSize) % height + height) % height;
+      if (cell) {
+        switch (cell.mode) {
+          case 'blocks': {
+            // Find which block this pixel is in, then invert its offset
+            const blockSize = blocksData[0]?.blockSize || 30;
+            const bx = Math.floor(x / blockSize);
+            const by = Math.floor(y / blockSize);
+            const block = blocksData.find(b => b.bx === bx && b.by === by);
+            if (block) {
+              // Invert: if block moved by (ox, oy), sample from (x - ox, y - oy)
+              srcX = x - block.ox * blockSize;
+              srcY = y - block.oy * blockSize;
+            }
+            break;
           }
-          break;
-        }
-        case 'stripes': {
-          const k = config.stripes.strength / 100;
-          const percent = Math.max(2, Math.min(50, config.stripes.size)) / 100;
-          const stripeWidth = Math.max(2, Math.round(Math.min(width, height) * percent));
-          const maxOffset = Math.round(k * Math.max(width, height) * 0.5);
-          
-          const stripeRand = mulberry32(cell.seed);
-          const isHorizontal = stripeRand() > 0.5;
-          
-          if (isHorizontal) {
-            const stripeIdx = Math.floor(y / stripeWidth);
-            const stripeOffsetRand = mulberry32(cell.seed + stripeIdx * 7919);
-            const offset = Math.round((stripeOffsetRand() * 2 - 1) * maxOffset);
-            newX = ((x + offset) % width + width) % width;
-          } else {
-            const stripeIdx = Math.floor(x / stripeWidth);
-            const stripeOffsetRand = mulberry32(cell.seed + stripeIdx * 7919);
-            const offset = Math.round((stripeOffsetRand() * 2 - 1) * maxOffset);
-            newY = ((y + offset) % height + height) % height;
+          case 'stripes': {
+            if (stripesData) {
+              const { isHorizontal, stripes } = stripesData;
+              if (isHorizontal) {
+                const stripeIdx = Math.floor(y / stripesData.stripes[0]?.stripeWidth || 10);
+                // Find stripe containing this y
+                let pos = 0;
+                for (const stripe of stripes) {
+                  if (y >= pos && y < pos + stripe.stripeWidth) {
+                    srcX = x - stripe.offset;
+                    break;
+                  }
+                  pos += stripe.stripeWidth;
+                }
+              } else {
+                let pos = 0;
+                for (const stripe of stripes) {
+                  if (x >= pos && x < pos + stripe.stripeWidth) {
+                    srcY = y - stripe.offset;
+                    break;
+                  }
+                  pos += stripe.stripeWidth;
+                }
+              }
+            }
+            break;
           }
-          break;
-        }
-        case 'geometric': {
-          const k = config.geometric.strength / 100;
-          const percent = Math.max(3, Math.min(40, config.geometric.size)) / 100;
-          const baseSize = Math.max(8, Math.round(Math.min(width, height) * percent));
-          const maxMove = Math.round(k * baseSize * 1.5);
-          const angle = simplex.noise(x * 0.01, y * 0.01) * Math.PI * 2;
-          const dist = (0.3 + (simplex.noise(x * 0.01 + 50, y * 0.01 + 50) + 1) / 2 * 0.7) * maxMove;
-          newX = ((x + Math.round(Math.cos(angle) * dist)) % width + width) % width;
-          newY = ((y + Math.round(Math.sin(angle) * dist)) % height + height) % height;
-          break;
-        }
-        case 'organic': {
-          const k = config.organic.strength / 100;
-          const percent = Math.max(5, Math.min(80, config.organic.size)) / 100;
-          const baseCellSize = Math.max(10, Math.round(Math.min(width, height) * percent));
-          const maxMove = Math.round(k * baseCellSize * 1.5);
-          
-          // Find nearest Voronoi center for this organic cell
-          const cellRand = mulberry32(cell.seed);
-          const angle = cellRand() * Math.PI * 2;
-          const dist = (0.3 + cellRand() * 0.7) * maxMove;
-          const ox = Math.round(Math.cos(angle) * dist);
-          const oy = Math.round(Math.sin(angle) * dist);
-          newX = ((x + ox) % width + width) % width;
-          newY = ((y + oy) % height + height) % height;
-          break;
+          case 'geometric': {
+            // Per-pixel displacement based on simplex
+            const angle = simplex.noise(x * 0.01 + 500, y * 0.01 + 500) * Math.PI * 2;
+            const dist = (0.3 + (simplex.noise(x * 0.01 + 550, y * 0.01 + 550) + 1) / 2 * 0.7) * geoMaxMove;
+            srcX = x - Math.round(Math.cos(angle) * dist);
+            srcY = y - Math.round(Math.sin(angle) * dist);
+            break;
+          }
+          case 'organic': {
+            // Find nearest Voronoi cell and invert its offset
+            let nearestIdx = 0;
+            let nearestDist = Infinity;
+            for (let i = 0; i < organicCells.length; i++) {
+              const dx = x - organicCells[i].cx;
+              const dy = y - organicCells[i].cy;
+              const dist = dx * dx + dy * dy;
+              if (dist < nearestDist) {
+                nearestDist = dist;
+                nearestIdx = i;
+              }
+            }
+            if (organicCells[nearestIdx]) {
+              srcX = x - organicCells[nearestIdx].ox;
+              srcY = y - organicCells[nearestIdx].oy;
+            }
+            break;
+          }
         }
       }
 
-      // Copy pixel from source to new position (backward mapping)
-      const di = (newY * width + newX) * 4;
+      // Wrap around
+      srcX = ((srcX % width) + width) % width;
+      srcY = ((srcY % height) + height) % height;
+
+      const si = (srcY * width + srcX) * 4;
       out[di] = src[si];
       out[di + 1] = src[si + 1];
       out[di + 2] = src[si + 2];
@@ -572,9 +335,23 @@ export function applyReassemblyToFrame(
     }
   }
 
-  // Apply silhouette protection
+  // Silhouette protection
   if (silhouetteMask && silhouetteStrength > 0) {
-    applySilhouetteProtection(out, src, width, height, silhouetteMask, silhouetteStrength);
+    const guard = Math.min(100, silhouetteStrength) / 100;
+    const threshold = 0.3 * guard;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const edgeValue = silhouetteMask[idx] / 255;
+        if (edgeValue > threshold) {
+          const di = idx * 4;
+          out[di] = src[di];
+          out[di + 1] = src[di + 1];
+          out[di + 2] = src[di + 2];
+          out[di + 3] = src[di + 3];
+        }
+      }
+    }
   }
 
   return out;

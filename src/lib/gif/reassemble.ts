@@ -1,14 +1,14 @@
 /**
- * Reassembly with liquid blending:
- * Divides image into a grid. Each cell's mode is determined by Perlin noise 
- * multiplied by the enabled strengths, creating organic, lava-lamp-like boundaries 
- * between Blocks, Stripes, Geometric, and Organic modes.
+ * Reassembly with liquid blending - FINAL VERSION:
+ * - Blocks: square mosaic tiles
+ * - Stripes: horizontal/vertical strips
+ * - Geometric: triangles, diamonds, hexagons
+ * - Organic: blob-like shapes that move as whole units
  */
 
 import type { Frame, ReassemblyConfig } from './types';
 import { mulberry32 } from '../utils/noise';
 
-// ============ PERLIN NOISE ============
 class PerlinNoise {
   private perm: Uint8Array;
   constructor(seed: number) {
@@ -47,10 +47,9 @@ class PerlinNoise {
   }
 }
 
-// ============ MAIN APPLY FUNCTION ============
 export function applyReassemblyToFrame(
   frame: Frame,
-  blockSize: number,
+  blockSizePercent: number,
   config: ReassemblyConfig,
   seed: number,
   _silhouetteMask?: Uint8Array,
@@ -58,37 +57,38 @@ export function applyReassemblyToFrame(
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
-  out.set(src); // Start with original
+  out.set(src);
 
   const anyEnabled = config.blocks.enabled || config.stripes.enabled || 
                      config.geometric.enabled || config.organic.enabled;
-  if (!anyEnabled || blockSize <= 0) return out;
+  if (!anyEnabled || blockSizePercent <= 0) return out;
 
   const perlin = new PerlinNoise(seed);
   const smoothness = Math.max(0.1, config.blendSmoothness / 100);
-  const freq = 0.01 / smoothness; // Lower freq = larger blobs
+  const freq = 0.01 / smoothness;
 
-  const cellSize = Math.max(4, Math.round(blockSize));
+  const percent = Math.max(0, Math.min(100, blockSizePercent)) / 100;
+  const cellSize = Math.max(4, Math.round(Math.min(width, height) * percent));
+  
   const cols = Math.ceil(width / cellSize);
   const rows = Math.ceil(height / cellSize);
 
   const cleared = new Uint8Array(width * height);
   const written = new Uint8Array(width * height);
-
   const rand = mulberry32(seed + 999);
 
+  const cellModes: Array<'blocks' | 'stripes' | 'geometric' | 'organic' | null> = [];
+  
   for (let gy = 0; gy < rows; gy++) {
     for (let gx = 0; gx < cols; gx++) {
       const cx = gx * cellSize + cellSize / 2;
       const cy = gy * cellSize + cellSize / 2;
       
-      // Sample noise for each mode at this cell's center
       const n1 = (perlin.noise(cx * freq, cy * freq) + 1) / 2;
       const n2 = (perlin.noise(cx * freq + 100, cy * freq + 100) + 1) / 2;
       const n3 = (perlin.noise(cx * freq + 200, cy * freq + 200) + 1) / 2;
       const n4 = (perlin.noise(cx * freq + 300, cy * freq + 300) + 1) / 2;
 
-      // Calculate scores based on enabled state and strength
       const scores = [
         { mode: 'blocks' as const, score: config.blocks.enabled ? n1 * (config.blocks.strength / 100) : 0 },
         { mode: 'stripes' as const, score: config.stripes.enabled ? n2 * (config.stripes.strength / 100) : 0 },
@@ -96,11 +96,46 @@ export function applyReassemblyToFrame(
         { mode: 'organic' as const, score: config.organic.enabled ? n4 * (config.organic.strength / 100) : 0 },
       ];
 
-      // Find the winning mode for this cell
       scores.sort((a, b) => b.score - a.score);
       const winner = scores[0];
+      cellModes.push(winner.score > 0.05 ? winner.mode : null);
+    }
+  }
 
-      if (winner.score <= 0.05) continue; // No effect applied, keep original
+  if (config.blocks.enabled) {
+    applyBlocksMode(src, out, width, height, cellSize, cols, rows, cellModes, config.blocks.strength, rand, cleared, written);
+  }
+
+  if (config.stripes.enabled) {
+    applyStripesMode(src, out, width, height, cellSize, cols, rows, cellModes, config.stripes.strength, rand, cleared, written);
+  }
+
+  if (config.geometric.enabled) {
+    applyGeometricMode(src, out, width, height, cellSize, cols, rows, cellModes, config.geometric.strength, rand, cleared, written);
+  }
+
+  if (config.organic.enabled) {
+    applyOrganicMode(src, out, width, height, cellSize, cols, rows, cellModes, config.organic.strength, seed, cleared, written);
+  }
+
+  fillEmptySpacesWithStretch(out, width, height, (i: number) => cleared[i] === 1 && written[i] === 0);
+  return out;
+}
+
+function applyBlocksMode(
+  src: Uint8ClampedArray, out: Uint8ClampedArray,
+  width: number, height: number,
+  cellSize: number, cols: number, rows: number,
+  cellModes: Array<'blocks' | 'stripes' | 'geometric' | 'organic' | null>,
+  strength: number, rand: () => number,
+  cleared: Uint8Array, written: Uint8Array
+) {
+  const k = strength / 100;
+  const maxMove = Math.max(1, Math.round(k * cellSize * 1.5));
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      if (cellModes[gy * cols + gx] !== 'blocks') continue;
 
       const x0 = gx * cellSize;
       const y0 = gy * cellSize;
@@ -109,136 +144,228 @@ export function applyReassemblyToFrame(
       const w = x1 - x0;
       const h = y1 - y0;
 
-      // Apply the winning mode to this specific cell
-      if (winner.mode === 'blocks') {
-        applyBlockCell(src, out, x0, y0, w, h, width, height, config.blocks.strength, rand, cleared, written);
-      } else if (winner.mode === 'stripes') {
-        applyStripeCell(src, out, x0, y0, w, h, width, height, config.stripes.strength, rand, cleared, written);
-      } else if (winner.mode === 'geometric') {
-        applyGeometricCell(src, out, x0, y0, w, h, width, height, cx, cy, config.geometric.strength, rand, cleared, written);
-      } else if (winner.mode === 'organic') {
-        applyOrganicCell(src, out, x0, y0, w, h, width, height, cx, cy, config.organic.strength, rand, cleared, written);
+      const angle = rand() * Math.PI * 2;
+      const dist = (0.3 + rand() * 0.7) * maxMove;
+      const ox = Math.round(Math.cos(angle) * dist);
+      const oy = Math.round(Math.sin(angle) * dist);
+
+      const pixels = new Uint8ClampedArray(w * h * 4);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const si = (y * width + x) * 4;
+          const di = ((y - y0) * w + (x - x0)) * 4;
+          pixels[di] = src[si]; pixels[di+1] = src[si+1]; pixels[di+2] = src[si+2]; pixels[di+3] = src[si+3];
+        }
+      }
+
+      const newX = ((x0 + ox) % width + width) % width;
+      const newY = ((y0 + oy) % height + height) % height;
+
+      for (let ly = 0; ly < h; ly++) {
+        for (let lx = 0; lx < w; lx++) {
+          const dx = ((newX + lx) % width + width) % width;
+          const dy = ((newY + ly) % height + height) % height;
+          const di = (dy * width + dx) * 4;
+          const si = (ly * w + lx) * 4;
+          out[di] = pixels[si]; out[di+1] = pixels[si+1]; out[di+2] = pixels[si+2]; out[di+3] = pixels[si+3];
+          written[dy * width + dx] = 1;
+        }
+      }
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) cleared[y * width + x] = 1;
+    }
+  }
+}
+
+function applyStripesMode(
+  src: Uint8ClampedArray, out: Uint8ClampedArray,
+  width: number, height: number,
+  cellSize: number, cols: number, rows: number,
+  cellModes: Array<'blocks' | 'stripes' | 'geometric' | 'organic' | null>,
+  strength: number, rand: () => number,
+  cleared: Uint8Array, written: Uint8Array
+) {
+  const k = strength / 100;
+  const isHorizontal = rand() > 0.5;
+  const baseDim = isHorizontal ? height : width;
+  const maxOffset = Math.round(k * baseDim * 0.4);
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      if (cellModes[gy * cols + gx] !== 'stripes') continue;
+
+      const x0 = gx * cellSize;
+      const y0 = gy * cellSize;
+      const x1 = Math.min(width, x0 + cellSize);
+      const y1 = Math.min(height, y0 + cellSize);
+      const w = x1 - x0;
+      const h = y1 - y0;
+
+      const offset = Math.round((rand() * 2 - 1) * maxOffset);
+      if (offset === 0) continue;
+
+      const pixels = new Uint8ClampedArray(w * h * 4);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const si = (y * width + x) * 4;
+          const di = ((y - y0) * w + (x - x0)) * 4;
+          pixels[di] = src[si]; pixels[di+1] = src[si+1]; pixels[di+2] = src[si+2]; pixels[di+3] = src[si+3];
+        }
+      }
+
+      for (let ly = 0; ly < h; ly++) {
+        for (let lx = 0; lx < w; lx++) {
+          const dx = ((x0 + lx + (isHorizontal ? offset : 0)) % width + width) % width;
+          const dy = ((y0 + ly + (isHorizontal ? 0 : offset)) % height + height) % height;
+          const di = (dy * width + dx) * 4;
+          const si = (ly * w + lx) * 4;
+          out[di] = pixels[si]; out[di+1] = pixels[si+1]; out[di+2] = pixels[si+2]; out[di+3] = pixels[si+3];
+          written[dy * width + dx] = 1;
+        }
+      }
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) cleared[y * width + x] = 1;
+    }
+  }
+}
+
+function isPointInTriangle(px: number, py: number, cx: number, cy: number, size: number): boolean {
+  const x = px - cx;
+  const y = py - cy;
+  if (y < -size / 2 || y > size / 2) return false;
+  const halfWidth = (size / 2) * (1 - (y + size / 2) / size);
+  return Math.abs(x) <= halfWidth;
+}
+
+function isPointInDiamond(px: number, py: number, cx: number, cy: number, size: number): boolean {
+  const x = Math.abs(px - cx);
+  const y = Math.abs(py - cy);
+  return (x / size + y / size) <= 1;
+}
+
+function isPointInHexagon(px: number, py: number, cx: number, cy: number, size: number): boolean {
+  const x = Math.abs(px - cx);
+  const y = Math.abs(py - cy);
+  return x <= size * 0.866 && y <= size * 0.5 && (x * 0.5 + y * 0.866) <= size * 0.866;
+}
+
+function applyGeometricMode(
+  src: Uint8ClampedArray, out: Uint8ClampedArray,
+  width: number, height: number,
+  cellSize: number, cols: number, rows: number,
+  cellModes: Array<'blocks' | 'stripes' | 'geometric' | 'organic' | null>,
+  strength: number, rand: () => number,
+  cleared: Uint8Array, written: Uint8Array
+) {
+  const k = strength / 100;
+  const maxMove = Math.round(k * cellSize * 1.5);
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      if (cellModes[gy * cols + gx] !== 'geometric') continue;
+
+      const cx = gx * cellSize + cellSize / 2;
+      const cy = gy * cellSize + cellSize / 2;
+      const size = cellSize * 0.8;
+      const types = [1, 2, 3];
+      const type = types[Math.floor(rand() * 3)];
+
+      const angle = rand() * Math.PI * 2;
+      const dist = (0.3 + rand() * 0.7) * maxMove;
+      const ox = Math.round(Math.cos(angle) * dist);
+      const oy = Math.round(Math.sin(angle) * dist);
+
+      const x0 = Math.max(0, Math.floor(cx - size));
+      const y0 = Math.max(0, Math.floor(cy - size));
+      const x1 = Math.min(width, Math.ceil(cx + size));
+      const y1 = Math.min(height, Math.ceil(cy + size));
+
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          let inside = false;
+          if (type === 1) inside = isPointInTriangle(x, y, cx, cy, size);
+          else if (type === 2) inside = isPointInDiamond(x, y, cx, cy, size);
+          else if (type === 3) inside = isPointInHexagon(x, y, cx, cy, size);
+
+          if (inside) {
+            const newX = ((x + ox) % width + width) % width;
+            const newY = ((y + oy) % height + height) % height;
+            const si = (y * width + x) * 4;
+            const di = (newY * width + newX) * 4;
+            out[di] = src[si]; out[di+1] = src[si+1]; out[di+2] = src[si+2]; out[di+3] = src[si+3];
+            written[newY * width + newX] = 1;
+            cleared[y * width + x] = 1;
+          }
+        }
       }
     }
   }
-
-  // Fill empty spaces
-  fillEmptySpacesWithStretch(out, width, height, (i: number) => cleared[i] === 1 && written[i] === 0);
-  return out;
 }
 
-// ============ CELL PROCESSORS ============
-function applyBlockCell(src: Uint8ClampedArray, out: Uint8ClampedArray, x0: number, y0: number, w: number, h: number, width: number, height: number, strength: number, rand: () => number, cleared: Uint8Array, written: Uint8Array) {
+function applyOrganicMode(
+  src: Uint8ClampedArray, out: Uint8ClampedArray,
+  width: number, height: number,
+  cellSize: number, cols: number, rows: number,
+  cellModes: Array<'blocks' | 'stripes' | 'geometric' | 'organic' | null>,
+  strength: number, seed: number,
+  cleared: Uint8Array, written: Uint8Array
+) {
   const k = strength / 100;
-  const maxMove = Math.max(1, Math.round(k * Math.max(w, h) * 1.5));
-  const angle = rand() * Math.PI * 2;
-  const dist = (0.3 + rand() * 0.7) * maxMove;
-  const ox = Math.round(Math.cos(angle) * dist);
-  const oy = Math.round(Math.sin(angle) * dist);
+  const blobPerlin = new PerlinNoise(seed + 777);
+  const blobFreq = 0.05;
 
-  const pixels = new Uint8ClampedArray(w * h * 4);
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const si = (y * width + x) * 4;
-      const di = ((y - y0) * w + (x - x0)) * 4;
-      pixels[di] = src[si]; pixels[di+1] = src[si+1]; pixels[di+2] = src[si+2]; pixels[di+3] = src[si+3];
-    }
-  }
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      if (cellModes[gy * cols + gx] !== 'organic') continue;
 
-  const newX = ((x0 + ox) % width + width) % width;
-  const newY = ((y0 + oy) % height + height) % height;
+      const cx = gx * cellSize + cellSize / 2;
+      const cy = gy * cellSize + cellSize / 2;
+      const maxRadius = cellSize * 0.9;
 
-  for (let ly = 0; ly < h; ly++) {
-    for (let lx = 0; lx < w; lx++) {
-      const dx = ((newX + lx) % width + width) % width;
-      const dy = ((newY + ly) % height + height) % height;
-      const di = (dy * width + dx) * 4;
-      const si = (ly * w + lx) * 4;
-      out[di] = pixels[si]; out[di+1] = pixels[si+1]; out[di+2] = pixels[si+2]; out[di+3] = pixels[si+3];
-      written[dy * width + dx] = 1;
-    }
-  }
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) cleared[y * width + x] = 1;
-}
+      // Determine movement direction for this blob
+      const moveAngle = blobPerlin.noise(cx * 0.01, cy * 0.01) * Math.PI * 2;
+      const moveDist = Math.round(k * cellSize * 1.2);
+      const moveX = Math.round(Math.cos(moveAngle) * moveDist);
+      const moveY = Math.round(Math.sin(moveAngle) * moveDist);
 
-function applyStripeCell(src: Uint8ClampedArray, out: Uint8ClampedArray, x0: number, y0: number, w: number, h: number, width: number, height: number, strength: number, rand: () => number, cleared: Uint8Array, written: Uint8Array) {
-  const k = strength / 100;
-  const isHorizontal = rand() > 0.5;
-  const maxOffset = Math.round(k * (isHorizontal ? width : height) * 0.5);
-  const offset = Math.round((rand() * 2 - 1) * maxOffset);
-  if (offset === 0) return;
+      const x0 = Math.max(0, Math.floor(cx - maxRadius));
+      const y0 = Math.max(0, Math.floor(cy - maxRadius));
+      const x1 = Math.min(width, Math.ceil(cx + maxRadius));
+      const y1 = Math.min(height, Math.ceil(cy + maxRadius));
 
-  const pixels = new Uint8ClampedArray(w * h * 4);
-  for (let y = y0; y < y0 + h; y++) {
-    for (let x = x0; x < x0 + w; x++) {
-      const si = (y * width + x) * 4;
-      const di = ((y - y0) * w + (x - x0)) * 4;
-      pixels[di] = src[si]; pixels[di+1] = src[si+1]; pixels[di+2] = src[si+2]; pixels[di+3] = src[si+3];
-    }
-  }
+      // Collect pixels that belong to this organic blob
+      const blobPixels: Array<{ x: number; y: number }> = [];
 
-  for (let ly = 0; ly < h; ly++) {
-    for (let lx = 0; lx < w; lx++) {
-      const dx = ((x0 + lx + (isHorizontal ? offset : 0)) % width + width) % width;
-      const dy = ((y0 + ly + (isHorizontal ? 0 : offset)) % height + height) % height;
-      const di = (dy * width + dx) * 4;
-      const si = (ly * w + lx) * 4;
-      out[di] = pixels[si]; out[di+1] = pixels[si+1]; out[di+2] = pixels[si+2]; out[di+3] = pixels[si+3];
-      written[dy * width + dx] = 1;
-    }
-  }
-  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) cleared[y * width + x] = 1;
-}
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const dx = x - cx;
+          const dy = y - cy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
-function applyGeometricCell(src: Uint8ClampedArray, out: Uint8ClampedArray, x0: number, y0: number, w: number, h: number, width: number, height: number, cx: number, cy: number, strength: number, rand: () => number, cleared: Uint8Array, written: Uint8Array) {
-  const k = strength / 100;
-  const maxMove = Math.round(k * Math.max(w, h) * 1.5);
-  const angle = rand() * Math.PI * 2;
-  const dist = (0.3 + rand() * 0.7) * maxMove;
-  const ox = Math.round(Math.cos(angle) * dist);
-  const oy = Math.round(Math.sin(angle) * dist);
+          if (dist < maxRadius) {
+            // Use Perlin noise to create organic shape
+            const noiseVal = blobPerlin.noise(x * blobFreq, y * blobFreq);
+            const threshold = 0.2 + (dist / maxRadius) * 0.6;
+            
+            if (noiseVal > threshold - 0.5) {
+              blobPixels.push({ x, y });
+            }
+          }
+        }
+      }
 
-  for (let y = y0; y < y0 + h; y++) {
-    for (let x = x0; x < x0 + w; x++) {
-      const newX = ((x + ox) % width + width) % width;
-      const newY = ((y + oy) % height + height) % height;
-      const si = (y * width + x) * 4;
-      const di = (newY * width + newX) * 4;
-      out[di] = src[si]; out[di+1] = src[si+1]; out[di+2] = src[si+2]; out[di+3] = src[si+3];
-      written[newY * width + newX] = 1;
-      cleared[y * width + x] = 1;
+      // Move all pixels in the blob together
+      for (const pixel of blobPixels) {
+        const newX = ((pixel.x + moveX) % width + width) % width;
+        const newY = ((pixel.y + moveY) % height + height) % height;
+        const si = (pixel.y * width + pixel.x) * 4;
+        const di = (newY * width + newX) * 4;
+        out[di] = src[si]; out[di+1] = src[si+1]; out[di+2] = src[si+2]; out[di+3] = src[si+3];
+        written[newY * width + newX] = 1;
+        cleared[pixel.y * width + pixel.x] = 1;
+      }
     }
   }
 }
 
-function applyOrganicCell(src: Uint8ClampedArray, out: Uint8ClampedArray, x0: number, y0: number, w: number, h: number, width: number, height: number, cx: number, cy: number, strength: number, rand: () => number, cleared: Uint8Array, written: Uint8Array) {
-  const k = strength / 100;
-  const maxMove = Math.round(k * Math.max(w, h) * 1.5);
-  
-  for (let y = y0; y < y0 + h; y++) {
-    for (let x = x0; x < x0 + w; x++) {
-      // Organic distortion: distance from center affects direction
-      const dx = x - cx;
-      const dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const angle = Math.atan2(dy, dx) + (rand() - 0.5) * 2; // Add randomness
-      const move = dist * k * 0.5;
-      
-      const ox = Math.round(Math.cos(angle) * move);
-      const oy = Math.round(Math.sin(angle) * move);
-
-      const newX = ((x + ox) % width + width) % width;
-      const newY = ((y + oy) % height + height) % height;
-      const si = (y * width + x) * 4;
-      const di = (newY * width + newX) * 4;
-      out[di] = src[si]; out[di+1] = src[si+1]; out[di+2] = src[si+2]; out[di+3] = src[si+3];
-      written[newY * width + newX] = 1;
-      cleared[y * width + x] = 1;
-    }
-  }
-}
-
-// ============ FILL EMPTY SPACES ============
 function fillEmptySpacesWithStretch(rgba: Uint8ClampedArray, width: number, height: number, isEmpty: (i: number) => boolean): void {
   const total = width * height;
   const queue: Array<[number, number, number, number]> = [];

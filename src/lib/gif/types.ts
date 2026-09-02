@@ -83,7 +83,6 @@ export interface ReassemblyConfig {
   geometric: ModeConfig;
   organic: ModeConfig;
   mask: MaskConfig;
-  blendSmoothness: number; // 0-100
 }
 
 export interface VariationConfig {

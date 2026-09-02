@@ -1,11 +1,9 @@
 /**
- * Reassembly with 4 DISTINCT modes + Simplex blending:
- * - Blocks: square/rectangular mosaic (White Noise for direction)
- * - Stripes: vertical slices top-to-bottom (deterministic)
- * - Geometric: scattered triangles/diamonds/hexagons (White Noise)
- * - Organic: liquid flow via Domain Warping
- * 
- * Blending between modes uses Simplex Noise.
+ * Reassembly with 4 DISTINCT modes + Simplex blending (FIXED)
+ * - Blocks: square/rectangular mosaic
+ * - Stripes: vertical slices top-to-bottom
+ * - Geometric: scattered triangles/diamonds/hexagons
+ * - Organic: liquid flow via Domain Warping (fixed warp amount)
  */
 
 import type { Frame, ReassemblyConfig } from './types';
@@ -73,7 +71,6 @@ function generateBlendMap(
       const nx = x * freq;
       const ny = y * freq;
 
-      // 4 independent simplex layers
       const n1 = (simplex.noise(nx, ny) + 1) / 2;
       const n2 = (simplex.noise(nx + 100, ny + 100) + 1) / 2;
       const n3 = (simplex.noise(nx + 200, ny + 200) + 1) / 2;
@@ -97,61 +94,7 @@ function generateBlendMap(
   return { blocks, stripes, geometric, organic };
 }
 
-// ============ FILL EMPTY SPACES ============
-function fillEmptySpacesWithStretch(
-  rgba: Uint8ClampedArray,
-  width: number,
-  height: number,
-  isEmpty: (i: number) => boolean
-): void {
-  const total = width * height;
-  const queue: Array<[number, number, number, number]> = [];
-  const visited = new Uint8Array(total);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (isEmpty(idx)) {
-        const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-        for (const [nx, ny] of neighbors) {
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const nidx = ny * width + nx;
-          if (!isEmpty(nidx)) {
-            queue.push([x, y, nx, ny]);
-            visited[idx] = 1;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  let qi = 0;
-  while (qi < queue.length) {
-    const [x, y, srcX, srcY] = queue[qi++];
-    const idx = y * width + x;
-    const srcIdx = srcY * width + srcX;
-    const si = srcIdx * 4;
-    const di = idx * 4;
-    rgba[di] = rgba[si];
-    rgba[di + 1] = rgba[si + 1];
-    rgba[di + 2] = rgba[si + 2];
-    rgba[di + 3] = rgba[si + 3];
-
-    const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-    for (const [nx, ny] of neighbors) {
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const nidx = ny * width + nx;
-      if (isEmpty(nidx) && !visited[nidx]) {
-        queue.push([nx, ny, srcX, srcY]);
-        visited[nidx] = 1;
-      }
-    }
-  }
-}
-
 // ============ BLOCKS MODE ============
-// Square/rectangular mosaic, each block moves as whole unit
 function applyBlocksMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -160,13 +103,11 @@ function applyBlocksMode(
   sizePercent: number,
   strength: number,
   seed: number
-): { cleared: Uint8Array; written: Uint8Array } {
-  const cleared = new Uint8Array(width * height);
+): Uint8Array {
   const written = new Uint8Array(width * height);
   const rand = mulberry32(seed);
   const k = strength / 100;
 
-  // Block size based on sizePercent (5-80% of min dimension)
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const blockSize = Math.max(4, Math.round(Math.min(width, height) * percent));
   const cols = Math.max(1, Math.ceil(width / blockSize));
@@ -175,7 +116,6 @@ function applyBlocksMode(
 
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
-      // White Noise: random direction per block
       if (rand() < 0.7 + k * 0.3) {
         const x0 = bx * blockSize;
         const y0 = by * blockSize;
@@ -189,7 +129,6 @@ function applyBlocksMode(
         const ox = Math.round(Math.cos(angle) * dist);
         const oy = Math.round(Math.sin(angle) * dist);
 
-        // Copy block pixels
         const pixels = new Uint8ClampedArray(w * h * 4);
         for (let y = y0; y < y1; y++) {
           for (let x = x0; x < x1; x++) {
@@ -202,7 +141,6 @@ function applyBlocksMode(
           }
         }
 
-        // Place at new position (wrap around)
         const newX = ((x0 + ox * blockSize) % width + width) % width;
         const newY = ((y0 + oy * blockSize) % height + height) % height;
 
@@ -219,21 +157,13 @@ function applyBlocksMode(
             written[dy * width + dx] = 1;
           }
         }
-
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            cleared[y * width + x] = 1;
-          }
-        }
       }
     }
   }
-
-  return { cleared, written };
+  return written;
 }
 
 // ============ STRIPES MODE ============
-// Vertical slices from top to bottom, deterministic
 function applyStripesMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -242,29 +172,22 @@ function applyStripesMode(
   sizePercent: number,
   strength: number,
   seed: number
-): { cleared: Uint8Array; written: Uint8Array } {
-  const cleared = new Uint8Array(width * height);
+): Uint8Array {
   const written = new Uint8Array(width * height);
   const rand = mulberry32(seed);
   const k = strength / 100;
 
-  // Stripe width based on sizePercent
   const percent = Math.max(2, Math.min(50, sizePercent)) / 100;
   const stripeWidth = Math.max(2, Math.round(width * percent));
   const maxOffset = Math.round(k * height * 0.5);
 
-  // Generate vertical stripes across entire image
   let x = 0;
   while (x < width) {
-    // Random thickness variation (70% to 130% of base)
     const thickness = Math.max(1, Math.round(stripeWidth * (0.7 + rand() * 0.6)));
     const x1 = Math.min(width, x + thickness);
-
-    // Vertical offset for this stripe
     const offset = Math.round((rand() * 2 - 1) * maxOffset);
 
     if (offset !== 0) {
-      // Copy stripe pixels
       const w = x1 - x;
       const pixels = new Uint8ClampedArray(w * height * 4);
       for (let y = 0; y < height; y++) {
@@ -278,7 +201,6 @@ function applyStripesMode(
         }
       }
 
-      // Place at new Y position (wrap vertically)
       const newY = ((offset) % height + height) % height;
       for (let y = 0; y < height; y++) {
         for (let lx = 0; lx < w; lx++) {
@@ -293,32 +215,20 @@ function applyStripesMode(
           written[dy * width + dx] = 1;
         }
       }
-
-      for (let y = 0; y < height; y++) {
-        for (let sx = x; sx < x1; sx++) {
-          cleared[y * width + sx] = 1;
-        }
-      }
     }
-
     x = x1;
   }
-
-  return { cleared, written };
+  return written;
 }
 
 // ============ GEOMETRIC MODE ============
-// Scattered triangles/diamonds/hexagons with overlap
 function isPointInTriangle(px: number, py: number, cx: number, cy: number, size: number, rotation: number): boolean {
-  // Rotate point around center
   const cos = Math.cos(-rotation);
   const sin = Math.sin(-rotation);
   const dx = px - cx;
   const dy = py - cy;
   const rx = dx * cos - dy * sin;
   const ry = dx * sin + dy * cos;
-
-  // Equilateral triangle
   const h = size * 1.2;
   if (ry < -h / 2 || ry > h / 2) return false;
   const halfWidth = (size / 2) * (1 - (ry + h / 2) / h);
@@ -353,18 +263,14 @@ function applyGeometricMode(
   sizePercent: number,
   strength: number,
   seed: number
-): { cleared: Uint8Array; written: Uint8Array } {
-  const cleared = new Uint8Array(width * height);
+): Uint8Array {
   const written = new Uint8Array(width * height);
   const rand = mulberry32(seed);
   const k = strength / 100;
 
-  // Shape size based on sizePercent
   const percent = Math.max(3, Math.min(40, sizePercent)) / 100;
   const baseSize = Math.max(8, Math.round(Math.min(width, height) * percent));
   const maxMove = Math.round(k * baseSize * 1.5);
-
-  // Generate scattered shapes (not grid-based!)
   const numShapes = Math.max(5, Math.round((width * height) / (baseSize * baseSize) * 0.5));
   
   interface Shape { cx: number; cy: number; size: number; type: number; rotation: number; ox: number; oy: number }
@@ -374,20 +280,15 @@ function applyGeometricMode(
     const cx = rand() * width;
     const cy = rand() * height;
     const size = baseSize * (0.6 + rand() * 0.8);
-    const types = [1, 2, 3]; // triangle, diamond, hexagon
+    const types = [1, 2, 3];
     const type = types[Math.floor(rand() * 3)];
     const rotation = rand() * Math.PI * 2;
     const angle = rand() * Math.PI * 2;
     const dist = (0.3 + rand() * 0.7) * maxMove;
 
-    shapes.push({
-      cx, cy, size, type, rotation,
-      ox: Math.round(Math.cos(angle) * dist),
-      oy: Math.round(Math.sin(angle) * dist),
-    });
+    shapes.push({ cx, cy, size, type, rotation, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
 
-  // For each pixel, find which shape it belongs to (first match wins for overlap)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       for (const shape of shapes) {
@@ -406,18 +307,15 @@ function applyGeometricMode(
           out[di + 2] = src[si + 2];
           out[di + 3] = src[si + 3];
           written[newY * width + newX] = 1;
-          cleared[y * width + x] = 1;
           break;
         }
       }
     }
   }
-
-  return { cleared, written };
+  return written;
 }
 
-// ============ ORGANIC MODE (Domain Warping) ============
-// Liquid flow using Domain Warping technique
+// ============ ORGANIC MODE (Domain Warping - FIXED) ============
 function applyOrganicMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -426,40 +324,33 @@ function applyOrganicMode(
   sizePercent: number,
   strength: number,
   seed: number
-): { cleared: Uint8Array; written: Uint8Array } {
-  const cleared = new Uint8Array(width * height);
+): Uint8Array {
   const written = new Uint8Array(width * height);
   const k = strength / 100;
 
-  // Frequency based on sizePercent (lower = larger "drops")
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const frequency = 0.005 + (1 - percent) * 0.03;
 
-  // Two Perlin noises for domain warping
   const perlin1 = new PerlinNoise(seed);
   const perlin2 = new PerlinNoise(seed + 12345);
 
-  // Warp amount based on strength
-  const warpAmount = k * 80;
+  // 🔧 ИСПРАВЛЕНО: Уменьшен warpAmount с 80 до 30, чтобы не было чёрных дыр
+  const warpAmount = k * 30;
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      // Domain warping: distort coordinates through noise
       const n1x = perlin1.noise(x * frequency, y * frequency);
       const n1y = perlin1.noise(x * frequency + 5.2, y * frequency + 1.3);
       
-      // Second level of warping for more organic feel
       const qx = x + n1x * warpAmount;
       const qy = y + n1y * warpAmount;
       
       const n2x = perlin2.noise(qx * frequency * 0.7, qy * frequency * 0.7);
       const n2y = perlin2.noise(qx * frequency * 0.7 + 8.3, qy * frequency * 0.7 + 2.8);
 
-      // Final warped source coordinates
-      const srcX = Math.round(x + n2x * warpAmount * 0.5);
-      const srcY = Math.round(y + n2y * warpAmount * 0.5);
+      const srcX = Math.round(x + n2x * warpAmount * 0.3);
+      const srcY = Math.round(y + n2y * warpAmount * 0.3);
 
-      // Wrap around
       const sx = ((srcX % width) + width) % width;
       const sy = ((srcY % height) + height) % height;
 
@@ -470,11 +361,9 @@ function applyOrganicMode(
       out[di + 2] = src[si + 2];
       out[di + 3] = src[si + 3];
       written[y * width + x] = 1;
-      cleared[y * width + x] = 1;
     }
   }
-
-  return { cleared, written };
+  return written;
 }
 
 // ============ MAIN APPLY FUNCTION ============
@@ -488,69 +377,41 @@ export function applyReassemblyToFrame(
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
+  
+  // Начинаем с оригинала (это наш fallback, если ни один режим не затронул пиксель)
+  out.set(src);
 
   const anyEnabled = config.blocks.enabled || config.stripes.enabled || 
                      config.geometric.enabled || config.organic.enabled;
 
   if (!anyEnabled) {
-    return new Uint8ClampedArray(src);
+    return out;
   }
 
-  // Generate blend map (Simplex Noise)
   const blendMask = generateBlendMap(width, height, config, seed);
 
-  // Apply each mode and collect results
-  const modeResults: Array<{ out: Uint8ClampedArray; cleared: Uint8Array; written: Uint8Array }> = [];
+  // Собираем результаты каждого режима
+  const results = {
+    blocks: { out: new Uint8ClampedArray(src), written: new Uint8Array(width * height) },
+    stripes: { out: new Uint8ClampedArray(src), written: new Uint8Array(width * height) },
+    geometric: { out: new Uint8ClampedArray(src), written: new Uint8Array(width * height) },
+    organic: { out: new Uint8ClampedArray(src), written: new Uint8Array(width * height) },
+  };
 
   if (config.blocks.enabled && config.blocks.strength > 0) {
-    const blocksOut = new Uint8ClampedArray(src.length);
-    blocksOut.set(src);
-    const { cleared, written } = applyBlocksMode(
-      src, blocksOut, width, height,
-      config.blocks.size, config.blocks.strength, seed
-    );
-    modeResults.push({ out: blocksOut, cleared, written });
-  } else {
-    modeResults.push({ out: new Uint8ClampedArray(src), cleared: new Uint8Array(width * height), written: new Uint8Array(width * height) });
+    results.blocks.written = applyBlocksMode(src, results.blocks.out, width, height, config.blocks.size, config.blocks.strength, seed);
   }
-
   if (config.stripes.enabled && config.stripes.strength > 0) {
-    const stripesOut = new Uint8ClampedArray(src.length);
-    stripesOut.set(src);
-    const { cleared, written } = applyStripesMode(
-      src, stripesOut, width, height,
-      config.stripes.size, config.stripes.strength, seed + 1
-    );
-    modeResults.push({ out: stripesOut, cleared, written });
-  } else {
-    modeResults.push({ out: new Uint8ClampedArray(src), cleared: new Uint8Array(width * height), written: new Uint8Array(width * height) });
+    results.stripes.written = applyStripesMode(src, results.stripes.out, width, height, config.stripes.size, config.stripes.strength, seed + 1);
   }
-
   if (config.geometric.enabled && config.geometric.strength > 0) {
-    const geoOut = new Uint8ClampedArray(src.length);
-    geoOut.set(src);
-    const { cleared, written } = applyGeometricMode(
-      src, geoOut, width, height,
-      config.geometric.size, config.geometric.strength, seed + 2
-    );
-    modeResults.push({ out: geoOut, cleared, written });
-  } else {
-    modeResults.push({ out: new Uint8ClampedArray(src), cleared: new Uint8Array(width * height), written: new Uint8Array(width * height) });
+    results.geometric.written = applyGeometricMode(src, results.geometric.out, width, height, config.geometric.size, config.geometric.strength, seed + 2);
   }
-
   if (config.organic.enabled && config.organic.strength > 0) {
-    const organicOut = new Uint8ClampedArray(src.length);
-    organicOut.set(src);
-    const { cleared, written } = applyOrganicMode(
-      src, organicOut, width, height,
-      config.organic.size, config.organic.strength, seed + 3
-    );
-    modeResults.push({ out: organicOut, cleared, written });
-  } else {
-    modeResults.push({ out: new Uint8ClampedArray(src), cleared: new Uint8Array(width * height), written: new Uint8Array(width * height) });
+    results.organic.written = applyOrganicMode(src, results.organic.out, width, height, config.organic.size, config.organic.strength, seed + 3);
   }
 
-  // Blend results using Simplex mask
+  // 🔧 ГЛАВНОЕ ИСПРАВЛЕНИЕ: Смешиваем ТОЛЬКО если режим реально записал пиксель в эту координату
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -564,58 +425,44 @@ export function applyReassemblyToFrame(
       let r = 0, g = 0, b = 0, a = 0;
       let totalWeight = 0;
 
-      // Blocks
-      if (blockWeight > 0.01) {
-        const si = di;
-        r += modeResults[0].out[si] * blockWeight;
-        g += modeResults[0].out[si + 1] * blockWeight;
-        b += modeResults[0].out[si + 2] * blockWeight;
-        a += modeResults[0].out[si + 3] * blockWeight;
+      if (results.blocks.written[idx] && blockWeight > 0.01) {
+        r += results.blocks.out[di] * blockWeight;
+        g += results.blocks.out[di + 1] * blockWeight;
+        b += results.blocks.out[di + 2] * blockWeight;
+        a += results.blocks.out[di + 3] * blockWeight;
         totalWeight += blockWeight;
       }
-
-      // Stripes
-      if (stripeWeight > 0.01) {
-        const si = di;
-        r += modeResults[1].out[si] * stripeWeight;
-        g += modeResults[1].out[si + 1] * stripeWeight;
-        b += modeResults[1].out[si + 2] * stripeWeight;
-        a += modeResults[1].out[si + 3] * stripeWeight;
+      if (results.stripes.written[idx] && stripeWeight > 0.01) {
+        r += results.stripes.out[di] * stripeWeight;
+        g += results.stripes.out[di + 1] * stripeWeight;
+        b += results.stripes.out[di + 2] * stripeWeight;
+        a += results.stripes.out[di + 3] * stripeWeight;
         totalWeight += stripeWeight;
       }
-
-      // Geometric
-      if (geoWeight > 0.01) {
-        const si = di;
-        r += modeResults[2].out[si] * geoWeight;
-        g += modeResults[2].out[si + 1] * geoWeight;
-        b += modeResults[2].out[si + 2] * geoWeight;
-        a += modeResults[2].out[si + 3] * geoWeight;
+      if (results.geometric.written[idx] && geoWeight > 0.01) {
+        r += results.geometric.out[di] * geoWeight;
+        g += results.geometric.out[di + 1] * geoWeight;
+        b += results.geometric.out[di + 2] * geoWeight;
+        a += results.geometric.out[di + 3] * geoWeight;
         totalWeight += geoWeight;
       }
-
-      // Organic
-      if (organicWeight > 0.01) {
-        const si = di;
-        r += modeResults[3].out[si] * organicWeight;
-        g += modeResults[3].out[si + 1] * organicWeight;
-        b += modeResults[3].out[si + 2] * organicWeight;
-        a += modeResults[3].out[si + 3] * organicWeight;
+      if (results.organic.written[idx] && organicWeight > 0.01) {
+        r += results.organic.out[di] * organicWeight;
+        g += results.organic.out[di + 1] * organicWeight;
+        b += results.organic.out[di + 2] * organicWeight;
+        a += results.organic.out[di + 3] * organicWeight;
         totalWeight += organicWeight;
       }
 
-      // If no mode affected this pixel, use original
-      if (totalWeight === 0) {
-        out[di] = src[di];
-        out[di + 1] = src[di + 1];
-        out[di + 2] = src[di + 2];
-        out[di + 3] = src[di + 3];
-      } else {
+      // Если хотя бы один режим обработал этот пиксель, записываем смешанный результат
+      if (totalWeight > 0) {
         out[di] = Math.round(r / totalWeight);
         out[di + 1] = Math.round(g / totalWeight);
         out[di + 2] = Math.round(b / totalWeight);
         out[di + 3] = Math.round(a / totalWeight);
       }
+      // ИНАЧЕ: оставляем оригинальный пиксель (out уже инициализирован как src). 
+      // Это гарантирует отсутствие чёрных дыр!
     }
   }
 

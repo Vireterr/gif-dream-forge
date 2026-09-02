@@ -689,58 +689,43 @@ function GifVariationStudio() {
                       Simplex Noise — как плавно режимы перетекают друг в друга
                     </p>
                   </label>
-                  {/* МАСКА */}
-<div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
-  <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>
-  
-  <label className="flex items-center justify-between mb-2">
-    <span className="label-mono text-sm">Включить маску</span>
-    <input
-      type="checkbox"
-      checked={reassemblyConfig.mask.enabled}
-      onChange={(e) => setReassemblyConfig((prev) => ({ 
-        ...prev, 
-        mask: { ...prev.mask, enabled: e.target.checked } 
-      }))}
-      disabled={stage === "generating"}
-      className="accent-primary"
-    />
-  </label>
+                                    {/* МАСКА */}
+                  <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
+                    <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>
+                    
+                    <label className="flex items-center justify-between mb-2">
+                      <span className="label-mono text-sm">Включить маску</span>
+                      <input
+                        type="checkbox"
+                        checked={reassemblyConfig.mask.enabled}
+                        onChange={(e) => updateMask('enabled', e.target.checked)}
+                        disabled={stage === "generating"}
+                        className="accent-primary"
+                      />
+                    </label>
 
-  <label className="block mb-2">
-    <span className="label-mono text-xs">Сила маски · {reassemblyConfig.mask.strength}%</span>
-    <input
-      type="range" min={0} max={100} step={5}
-      value={reassemblyConfig.mask.strength}
-      onChange={(e) => setReassemblyConfig((prev) => ({ 
-        ...prev, 
-        mask: { ...prev.mask, strength: Number(e.target.value) } 
-      }))}
-      className="mt-1 w-full accent-primary"
-      disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
-    />
-    <p className="mt-1 text-xs text-muted-foreground">
-      Насколько сильно маска влияет на зоны режимов
-    </p>
-  </label>
+                    <label className="block mb-2">
+                      <span className="label-mono text-xs">Сила маски · {reassemblyConfig.mask.strength}%</span>
+                      <input
+                        type="range" min={0} max={100} step={5}
+                        value={reassemblyConfig.mask.strength}
+                        onChange={(e) => updateMask('strength', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+                      />
+                    </label>
 
-  <label className="block">
-    <span className="label-mono text-xs">Плавность маски · {reassemblyConfig.mask.smoothness}%</span>
-    <input
-      type="range" min={1} max={100} step={1}
-      value={reassemblyConfig.mask.smoothness}
-      onChange={(e) => setReassemblyConfig((prev) => ({ 
-        ...prev, 
-        mask: { ...prev.mask, smoothness: Number(e.target.value) } 
-      }))}
-      className="mt-1 w-full accent-primary"
-      disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
-    />
-    <p className="mt-1 text-xs text-muted-foreground">
-      Размер зон маски (больше = крупнее зоны)
-    </p>
-  </label>
-</div>
+                    <label className="block">
+                      <span className="label-mono text-xs">Плавность маски · {reassemblyConfig.mask.smoothness}%</span>
+                      <input
+                        type="range" min={1} max={100} step={1}
+                        value={reassemblyConfig.mask.smoothness}
+                        onChange={(e) => updateMask('smoothness', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+                      />
+                    </label>
+                  </div>
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"

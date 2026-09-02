@@ -5,9 +5,21 @@ import { generateDisplacementField, warpFrame, applyTemporalConsistency } from '
 import { generateColorTransform, applyColorTransformToFrame } from './color-transform';
 import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
-import { applyReassemblyToFrame } from './reassemble';
 import { computeMotionMask } from './temporal';
 import { applyColorCollage } from './color-segmentation';
+
+// Создаем Web Worker для reassembly
+let reassemblyWorker: Worker | null = null;
+
+function getReassemblyWorker(): Worker {
+  if (!reassemblyWorker) {
+    reassemblyWorker = new Worker(
+      new URL('./reassembly.worker.ts', import.meta.url),
+      { type: 'module' }
+    );
+  }
+  return reassemblyWorker;
+}
 
 function applySimilarity(effectStrength: number, similarity: number): number {
   return (effectStrength / 100) * (similarity / 100) * 100;
@@ -37,7 +49,7 @@ export async function generateVariations(
     stripes: { enabled: false, strength: 0, size: 15 },
     geometric: { enabled: false, strength: 0, size: 20 },
     organic: { enabled: false, strength: 0, size: 30 },
-    blendSmoothness: 50,
+    mask: { enabled: true, strength: 50, smoothness: 50 },
   };
 
   const originalFrames = await decodeGif(file);
@@ -101,10 +113,22 @@ export async function generateVariations(
         };
       }
 
+      // Используем Web Worker для reassembly
       if (anyReassemblyEnabled) {
-        const reassembledRgba = applyReassemblyToFrame(
-          currentFrame, blockSize, reassemblyConfig, variationSeed, silhouetteMask, silhouetteStrength
-        );
+        const worker = getReassemblyWorker();
+        const reassembledRgba = await new Promise<Uint8ClampedArray>((resolve) => {
+          worker.onmessage = (e) => {
+            resolve(new Uint8ClampedArray(e.data.rgba));
+          };
+          worker.postMessage({
+            frame: currentFrame,
+            config: reassemblyConfig,
+            seed: variationSeed,
+            silhouetteMask,
+            silhouetteStrength,
+          });
+        });
+
         currentFrame = {
           rgba: reassembledRgba,
           delay: currentFrame.delay,

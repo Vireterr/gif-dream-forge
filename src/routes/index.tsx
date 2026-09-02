@@ -64,14 +64,13 @@ function GifVariationStudio() {
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
-  // Reassembly config with 4 modes, each has enabled/strength/size
   const [reassemblyConfig, setReassemblyConfig] = useState<ReassemblyConfig>({
-  blocks: { enabled: true, strength: 70, size: 30 },
-  stripes: { enabled: false, strength: 70, size: 15 },
-  geometric: { enabled: false, strength: 70, size: 20 },
-  organic: { enabled: false, strength: 70, size: 30 },
-  mask: { enabled: true, strength: 50, smoothness: 50 },
-});
+    blocks: { enabled: true, strength: 70, size: 30 },
+    stripes: { enabled: false, strength: 70, size: 15 },
+    geometric: { enabled: false, strength: 70, size: 20 },
+    organic: { enabled: false, strength: 70, size: 30 },
+    mask: { enabled: true, strength: 50, smoothness: 50 },
+  });
 
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VariationResult[]>([]);
@@ -215,13 +214,13 @@ function GifVariationStudio() {
       [mode]: { ...prev[mode], [field]: value },
     }));
   }
-  
+
   function updateMask(field: 'enabled' | 'strength' | 'smoothness', value: boolean | number) {
-  setReassemblyConfig((prev) => ({
-    ...prev,
-    mask: { ...prev.mask, [field]: value },
-  }));
-}
+    setReassemblyConfig((prev) => ({
+      ...prev,
+      mask: { ...prev.mask, [field]: value },
+    }));
+  }
 
   return (
     <main className="mx-auto max-w-7xl px-5 py-10 md:py-16">
@@ -648,7 +647,7 @@ function GifVariationStudio() {
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
-                        <span className="label-mono text-sm">🫧 Произвольные</span>
+                        <span className="label-mono text-sm"> Произвольные</span>
                       </label>
                       <span className="font-mono text-xs text-muted-foreground">
                         {reassemblyConfig.organic.strength}%
@@ -674,11 +673,10 @@ function GifVariationStudio() {
                       />
                     </div>
                   </div>
-                  
-                                    {/* МАСКА */}
+
+                  {/* МАСКА */}
                   <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
                     <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>
-                    
                     <label className="flex items-center justify-between mb-2">
                       <span className="label-mono text-sm">Включить маску</span>
                       <input
@@ -689,7 +687,6 @@ function GifVariationStudio() {
                         className="accent-primary"
                       />
                     </label>
-
                     <label className="block mb-2">
                       <span className="label-mono text-xs">Сила маски · {reassemblyConfig.mask.strength}%</span>
                       <input
@@ -700,7 +697,6 @@ function GifVariationStudio() {
                         disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
                       />
                     </label>
-
                     <label className="block">
                       <span className="label-mono text-xs">Плавность маски · {reassemblyConfig.mask.smoothness}%</span>
                       <input
@@ -712,29 +708,31 @@ function GifVariationStudio() {
                       />
                     </label>
                   </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={mirror}
-                    onChange={(e) => setMirror(e.target.checked)}
-                    disabled={stage === "generating"}
-                    className="accent-primary"
-                  />
-                  <span>Allow mirrored variations</span>
-                </label>
 
-                <label className="block">
-                  <div className="flex items-baseline justify-between">
-                    <span className="label-mono">Variations · {count}</span>
-                  </div>
-                  <input
-                    type="range" min={1} max={100} step={1}
-                    value={count}
-                    onChange={(e) => setCount(Number(e.target.value))}
-                    className="mt-2 w-full accent-primary"
-                    disabled={stage === "generating"}
-                  />
-                </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={mirror}
+                      onChange={(e) => setMirror(e.target.checked)}
+                      disabled={stage === "generating"}
+                      className="accent-primary"
+                    />
+                    <span>Allow mirrored variations</span>
+                  </label>
+
+                  <label className="block">
+                    <div className="flex items-baseline justify-between">
+                      <span className="label-mono">Variations · {count}</span>
+                    </div>
+                    <input
+                      type="range" min={1} max={100} step={1}
+                      value={count}
+                      onChange={(e) => setCount(Number(e.target.value))}
+                      className="mt-2 w-full accent-primary"
+                      disabled={stage === "generating"}
+                    />
+                  </label>
+                </div>
               </div>
             </>
           )}

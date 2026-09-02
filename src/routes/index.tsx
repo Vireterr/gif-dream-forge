@@ -674,21 +674,7 @@ function GifVariationStudio() {
                       />
                     </div>
                   </div>
-
-                  {/* Blend smoothness */}
-                  <label className="block mt-3">
-                    <span className="label-mono">Плавность смешения · {reassemblyConfig.blendSmoothness}%</span>
-                    <input
-                      type="range" min={1} max={100} step={1}
-                      value={reassemblyConfig.blendSmoothness}
-                      onChange={(e) => setReassemblyConfig((prev) => ({ ...prev, blendSmoothness: Number(e.target.value) }))}
-                      className="mt-2 w-full accent-primary"
-                      disabled={stage === "generating"}
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Simplex Noise — как плавно режимы перетекают друг в друга
-                    </p>
-                  </label>
+                  
                                     {/* МАСКА */}
                   <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
                     <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>

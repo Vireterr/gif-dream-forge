@@ -102,3 +102,17 @@ export interface VariationResult {
   bytes: number;
   seed: number;
 }
+
+export interface MaskConfig {
+  enabled: boolean;
+  strength: number;  // 0-100
+  smoothness: number; // 0-100
+}
+
+export interface ReassemblyConfig {
+  blocks: ModeConfig;
+  stripes: ModeConfig;
+  geometric: ModeConfig;
+  organic: ModeConfig;
+  mask: MaskConfig; // НОВАЯ МАСКА
+}

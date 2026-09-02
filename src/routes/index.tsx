@@ -64,12 +64,12 @@ function GifVariationStudio() {
   const [mirror, setMirror] = useState(false);
   const [count, setCount] = useState(10);
 
-  // Reassembly config with 4 modes
+  // Reassembly config with 4 modes, each has enabled/strength/size
   const [reassemblyConfig, setReassemblyConfig] = useState<ReassemblyConfig>({
-    blocks: { enabled: true, strength: 50 },
-    stripes: { enabled: false, strength: 50 },
-    geometric: { enabled: false, strength: 50 },
-    organic: { enabled: false, strength: 50 },
+    blocks: { enabled: true, strength: 70, size: 30 },
+    stripes: { enabled: false, strength: 70, size: 15 },
+    geometric: { enabled: false, strength: 70, size: 20 },
+    organic: { enabled: false, strength: 70, size: 30 },
     blendSmoothness: 50,
   });
 
@@ -209,7 +209,7 @@ function GifVariationStudio() {
     setTargetColors((prev) => prev.filter((c) => c.id !== id));
   }
 
-  function updateReassemblyMode(mode: keyof Omit<ReassemblyConfig, 'blendSmoothness'>, field: 'enabled' | 'strength', value: boolean | number) {
+  function updateMode(mode: 'blocks' | 'stripes' | 'geometric' | 'organic', field: 'enabled' | 'strength' | 'size', value: boolean | number) {
     setReassemblyConfig((prev) => ({
       ...prev,
       [mode]: { ...prev[mode], [field]: value },
@@ -514,16 +514,16 @@ function GifVariationStudio() {
                 </div>
 
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Пересборка (Рандом-редактор)</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold">🧱 Рандом-редактор</h3>
 
-                  {/* Blocks mode */}
+                  {/* BLOCKS */}
                   <div className="mb-3 rounded-md border border-border p-3">
                     <div className="flex items-center justify-between mb-2">
                       <label className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={reassemblyConfig.blocks.enabled}
-                          onChange={(e) => updateReassemblyMode('blocks', 'enabled', e.target.checked)}
+                          onChange={(e) => updateMode('blocks', 'enabled', e.target.checked)}
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
@@ -536,20 +536,32 @@ function GifVariationStudio() {
                     <input
                       type="range" min={0} max={100} step={5}
                       value={reassemblyConfig.blocks.strength}
-                      onChange={(e) => updateReassemblyMode('blocks', 'strength', Number(e.target.value))}
+                      onChange={(e) => updateMode('blocks', 'strength', Number(e.target.value))}
                       className="w-full accent-accent"
                       disabled={stage === "generating" || !reassemblyConfig.blocks.enabled}
                     />
+                    <div className="mt-2">
+                      <div className="flex items-baseline justify-between">
+                        <span className="label-mono text-xs">Размер блока · {reassemblyConfig.blocks.size}%</span>
+                      </div>
+                      <input
+                        type="range" min={5} max={80} step={1}
+                        value={reassemblyConfig.blocks.size}
+                        onChange={(e) => updateMode('blocks', 'size', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.blocks.enabled}
+                      />
+                    </div>
                   </div>
 
-                  {/* Stripes mode */}
+                  {/* STRIPES */}
                   <div className="mb-3 rounded-md border border-border p-3">
                     <div className="flex items-center justify-between mb-2">
                       <label className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={reassemblyConfig.stripes.enabled}
-                          onChange={(e) => updateReassemblyMode('stripes', 'enabled', e.target.checked)}
+                          onChange={(e) => updateMode('stripes', 'enabled', e.target.checked)}
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
@@ -562,20 +574,32 @@ function GifVariationStudio() {
                     <input
                       type="range" min={0} max={100} step={5}
                       value={reassemblyConfig.stripes.strength}
-                      onChange={(e) => updateReassemblyMode('stripes', 'strength', Number(e.target.value))}
+                      onChange={(e) => updateMode('stripes', 'strength', Number(e.target.value))}
                       className="w-full accent-accent"
                       disabled={stage === "generating" || !reassemblyConfig.stripes.enabled}
                     />
+                    <div className="mt-2">
+                      <div className="flex items-baseline justify-between">
+                        <span className="label-mono text-xs">Ширина полосы · {reassemblyConfig.stripes.size}%</span>
+                      </div>
+                      <input
+                        type="range" min={2} max={50} step={1}
+                        value={reassemblyConfig.stripes.size}
+                        onChange={(e) => updateMode('stripes', 'size', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.stripes.enabled}
+                      />
+                    </div>
                   </div>
 
-                  {/* Geometric mode */}
+                  {/* GEOMETRIC */}
                   <div className="mb-3 rounded-md border border-border p-3">
                     <div className="flex items-center justify-between mb-2">
                       <label className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={reassemblyConfig.geometric.enabled}
-                          onChange={(e) => updateReassemblyMode('geometric', 'enabled', e.target.checked)}
+                          onChange={(e) => updateMode('geometric', 'enabled', e.target.checked)}
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
@@ -588,20 +612,32 @@ function GifVariationStudio() {
                     <input
                       type="range" min={0} max={100} step={5}
                       value={reassemblyConfig.geometric.strength}
-                      onChange={(e) => updateReassemblyMode('geometric', 'strength', Number(e.target.value))}
+                      onChange={(e) => updateMode('geometric', 'strength', Number(e.target.value))}
                       className="w-full accent-accent"
                       disabled={stage === "generating" || !reassemblyConfig.geometric.enabled}
                     />
+                    <div className="mt-2">
+                      <div className="flex items-baseline justify-between">
+                        <span className="label-mono text-xs">Размер фигур · {reassemblyConfig.geometric.size}%</span>
+                      </div>
+                      <input
+                        type="range" min={3} max={40} step={1}
+                        value={reassemblyConfig.geometric.size}
+                        onChange={(e) => updateMode('geometric', 'size', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.geometric.enabled}
+                      />
+                    </div>
                   </div>
 
-                  {/* Organic mode */}
+                  {/* ORGANIC */}
                   <div className="mb-3 rounded-md border border-border p-3">
                     <div className="flex items-center justify-between mb-2">
                       <label className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={reassemblyConfig.organic.enabled}
-                          onChange={(e) => updateReassemblyMode('organic', 'enabled', e.target.checked)}
+                          onChange={(e) => updateMode('organic', 'enabled', e.target.checked)}
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
@@ -614,15 +650,27 @@ function GifVariationStudio() {
                     <input
                       type="range" min={0} max={100} step={5}
                       value={reassemblyConfig.organic.strength}
-                      onChange={(e) => updateReassemblyMode('organic', 'strength', Number(e.target.value))}
+                      onChange={(e) => updateMode('organic', 'strength', Number(e.target.value))}
                       className="w-full accent-accent"
                       disabled={stage === "generating" || !reassemblyConfig.organic.enabled}
                     />
+                    <div className="mt-2">
+                      <div className="flex items-baseline justify-between">
+                        <span className="label-mono text-xs">Размер капель · {reassemblyConfig.organic.size}%</span>
+                      </div>
+                      <input
+                        type="range" min={5} max={80} step={1}
+                        value={reassemblyConfig.organic.size}
+                        onChange={(e) => updateMode('organic', 'size', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.organic.enabled}
+                      />
+                    </div>
                   </div>
 
                   {/* Blend smoothness */}
                   <label className="block mt-3">
-                    <span className="label-mono">Плавность переходов · {reassemblyConfig.blendSmoothness}%</span>
+                    <span className="label-mono">Плавность смешения · {reassemblyConfig.blendSmoothness}%</span>
                     <input
                       type="range" min={1} max={100} step={1}
                       value={reassemblyConfig.blendSmoothness}
@@ -631,30 +679,8 @@ function GifVariationStudio() {
                       disabled={stage === "generating"}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Как плавно режимы перетекают друг в друга
+                      Simplex Noise — как плавно режимы перетекают друг в друга
                     </p>
-                  </label>
-
-                  <label className="block mt-3">
-                    <span className="label-mono">Размер · {blockSize}% от GIF</span>
-                    <input
-                      type="range" min={0} max={100} step={1}
-                      value={blockSize}
-                      onChange={(e) => setBlockSize(Number(e.target.value))}
-                      className="mt-2 w-full accent-accent"
-                      disabled={stage === "generating"}
-                    />
-                  </label>
-
-                  <label className="block mt-3">
-                    <span className="label-mono">Силуэт · {silhouette}%</span>
-                    <input
-                      type="range" min={0} max={100} step={5}
-                      value={silhouette}
-                      onChange={(e) => setSilhouette(Number(e.target.value))}
-                      className="mt-2 w-full accent-primary"
-                      disabled={stage === "generating"}
-                    />
                   </label>
                 </div>
 

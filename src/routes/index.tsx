@@ -66,12 +66,12 @@ function GifVariationStudio() {
 
   // Reassembly config with 4 modes, each has enabled/strength/size
   const [reassemblyConfig, setReassemblyConfig] = useState<ReassemblyConfig>({
-    blocks: { enabled: true, strength: 70, size: 30 },
-    stripes: { enabled: false, strength: 70, size: 15 },
-    geometric: { enabled: false, strength: 70, size: 20 },
-    organic: { enabled: false, strength: 70, size: 30 },
-    blendSmoothness: 50,
-  });
+  blocks: { enabled: true, strength: 70, size: 30 },
+  stripes: { enabled: false, strength: 70, size: 15 },
+  geometric: { enabled: false, strength: 70, size: 20 },
+  organic: { enabled: false, strength: 70, size: 30 },
+  mask: { enabled: true, strength: 50, smoothness: 50 },
+});
 
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VariationResult[]>([]);
@@ -215,6 +215,13 @@ function GifVariationStudio() {
       [mode]: { ...prev[mode], [field]: value },
     }));
   }
+  
+  function updateMask(field: 'enabled' | 'strength' | 'smoothness', value: boolean | number) {
+  setReassemblyConfig((prev) => ({
+    ...prev,
+    mask: { ...prev.mask, [field]: value },
+  }));
+}
 
   return (
     <main className="mx-auto max-w-7xl px-5 py-10 md:py-16">
@@ -682,8 +689,58 @@ function GifVariationStudio() {
                       Simplex Noise — как плавно режимы перетекают друг в друга
                     </p>
                   </label>
-                </div>
+                  {/* МАСКА */}
+<div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
+  <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>
+  
+  <label className="flex items-center justify-between mb-2">
+    <span className="label-mono text-sm">Включить маску</span>
+    <input
+      type="checkbox"
+      checked={reassemblyConfig.mask.enabled}
+      onChange={(e) => setReassemblyConfig((prev) => ({ 
+        ...prev, 
+        mask: { ...prev.mask, enabled: e.target.checked } 
+      }))}
+      disabled={stage === "generating"}
+      className="accent-primary"
+    />
+  </label>
 
+  <label className="block mb-2">
+    <span className="label-mono text-xs">Сила маски · {reassemblyConfig.mask.strength}%</span>
+    <input
+      type="range" min={0} max={100} step={5}
+      value={reassemblyConfig.mask.strength}
+      onChange={(e) => setReassemblyConfig((prev) => ({ 
+        ...prev, 
+        mask: { ...prev.mask, strength: Number(e.target.value) } 
+      }))}
+      className="mt-1 w-full accent-primary"
+      disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+    />
+    <p className="mt-1 text-xs text-muted-foreground">
+      Насколько сильно маска влияет на зоны режимов
+    </p>
+  </label>
+
+  <label className="block">
+    <span className="label-mono text-xs">Плавность маски · {reassemblyConfig.mask.smoothness}%</span>
+    <input
+      type="range" min={1} max={100} step={1}
+      value={reassemblyConfig.mask.smoothness}
+      onChange={(e) => setReassemblyConfig((prev) => ({ 
+        ...prev, 
+        mask: { ...prev.mask, smoothness: Number(e.target.value) } 
+      }))}
+      className="mt-1 w-full accent-primary"
+      disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+    />
+    <p className="mt-1 text-xs text-muted-foreground">
+      Размер зон маски (больше = крупнее зоны)
+    </p>
+  </label>
+</div>
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"

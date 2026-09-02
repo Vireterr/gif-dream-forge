@@ -33,10 +33,10 @@ export async function generateVariations(
   const targetColors = config.targetColors ?? [];
   
   const reassemblyConfig = config.reassemblyConfig ?? {
-    blocks: { enabled: false, strength: 0 },
-    stripes: { enabled: false, strength: 0 },
-    geometric: { enabled: false, strength: 0 },
-    organic: { enabled: false, strength: 0 },
+    blocks: { enabled: false, strength: 0, size: 30 },
+    stripes: { enabled: false, strength: 0, size: 15 },
+    geometric: { enabled: false, strength: 0, size: 20 },
+    organic: { enabled: false, strength: 0, size: 30 },
     blendSmoothness: 50,
   };
 
@@ -101,7 +101,7 @@ export async function generateVariations(
         };
       }
 
-      if (anyReassemblyEnabled && blockSize > 0) {
+      if (anyReassemblyEnabled) {
         const reassembledRgba = applyReassemblyToFrame(
           currentFrame, blockSize, reassemblyConfig, variationSeed, silhouetteMask, silhouetteStrength
         );

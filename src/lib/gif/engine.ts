@@ -810,42 +810,46 @@ function applyBlocksMode(
   const cols = Math.max(1, Math.ceil(width / blockSize));
   const rows = Math.max(1, Math.ceil(height / blockSize));
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
+
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
-        const x0 = bx * blockSize;
-        const y0 = by * blockSize;
-        const x1 = Math.min(width, x0 + blockSize);
-        const y1 = Math.min(height, y0 + blockSize);
-        const w = x1 - x0;
-        const h = y1 - y0;
-        const angle = rand() * Math.PI * 2;
-        const dist = (0.3 + rand() * 0.7) * maxMove;
-        const ox = Math.round(Math.cos(angle) * dist);
-        const oy = Math.round(Math.sin(angle) * dist);
-        const pixels = new Uint8ClampedArray(w * h * 4);
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            const si = (y * width + x) * 4;
-            const di = ((y - y0) * w + (x - x0)) * 4;
-            pixels[di] = src[si];
-            pixels[di + 1] = src[si + 1];
-            pixels[di + 2] = src[si + 2];
-            pixels[di + 3] = src[si + 3];
-          }
+      const x0 = bx * blockSize;
+      const y0 = by * blockSize;
+      const x1 = Math.min(width, x0 + blockSize);
+      const y1 = Math.min(height, y0 + blockSize);
+      const w = x1 - x0;
+      const h = y1 - y0;
+      
+      const angle = rand() * Math.PI * 2;
+      const dist = (0.3 + rand() * 0.7) * maxMove;
+      const ox = Math.round(Math.cos(angle) * dist);
+      const oy = Math.round(Math.sin(angle) * dist);
+
+      const pixels = new Uint8ClampedArray(w * h * 4);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const si = (y * width + x) * 4;
+          const di = ((y - y0) * w + (x - x0)) * 4;
+          pixels[di] = src[si];
+          pixels[di + 1] = src[si + 1];
+          pixels[di + 2] = src[si + 2];
+          pixels[di + 3] = src[si + 3];
         }
-        const newX = ((x0 + ox * blockSize) % width + width) % width;
-        const newY = ((y0 + oy * blockSize) % height + height) % height;
-        for (let ly = 0; ly < h; ly++) {
-          for (let lx = 0; lx < w; lx++) {
-            const dx = ((newX + lx) % width + width) % width;
-            const dy = ((newY + ly) % height + height) % height;
-            const di = (dy * width + dx) * 4;
-            const si = (ly * w + lx) * 4;
-            out[di] = pixels[si];
-            out[di + 1] = pixels[si + 1];
-            out[di + 2] = pixels[si + 2];
-            out[di + 3] = pixels[si + 3];
-          }
+      }
+
+      const newX = ((x0 + ox * blockSize) % width + width) % width;
+      const newY = ((y0 + oy * blockSize) % height + height) % height;
+
+      for (let ly = 0; ly < h; ly++) {
+        for (let lx = 0; lx < w; lx++) {
+          const dx = ((newX + lx) % width + width) % width;
+          const dy = ((newY + ly) % height + height) % height;
+          const di = (dy * width + dx) * 4;
+          const si = (ly * w + lx) * 4;
+          out[di] = pixels[si];
+          out[di + 1] = pixels[si + 1];
+          out[di + 2] = pixels[si + 2];
+          out[di + 3] = pixels[si + 3];
         }
       }
     }

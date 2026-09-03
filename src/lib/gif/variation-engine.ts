@@ -102,7 +102,7 @@ export async function generateVariations(
         };
       }
 
-      // 🔧 ПРЯМОЙ ВЫЗОВ (без Web Worker)
+      // Прямой вызов reassembly (без Worker)
       if (anyReassemblyEnabled) {
         const reassembledRgba = applyReassemblyToFrame(
           currentFrame,

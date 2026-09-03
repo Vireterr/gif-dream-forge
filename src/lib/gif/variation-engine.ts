@@ -80,4 +80,129 @@ export async function generateVariations(
                                   reassemblyConfig.geometric.enabled ||
                                   reassemblyConfig.organic.enabled;
 
-    const enabledTargets = target
+    const enabledTargets = targetColorsMode
+      ? targetColors.filter((t) => t.enabled)
+      : [];
+
+    const variationFrames: Frame[] = [];
+
+    for (let f = 0; f < totalFrames; f++) {
+      const originalFrame = originalFrames[f]!;
+      let currentFrame: Frame = originalFrame;
+
+      if (colorSegStrength > 0 && enabledTargets.length > 0) {
+        const collageRgba = applyColorCollage(
+          currentFrame, colorSegStrength, variationSeed, enabledTargets
+        );
+        currentFrame = {
+          rgba: collageRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      // 🔧 ПРЯМОЙ ВЫЗОВ (без Web Worker)
+      if (anyReassemblyEnabled) {
+        const reassembledRgba = applyReassemblyToFrame(
+          currentFrame,
+          blockSize,
+          reassemblyConfig,
+          variationSeed,
+          silhouetteMask,
+          silhouetteStrength
+        );
+        currentFrame = {
+          rgba: reassembledRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      if (geometryTransform) {
+        const geoRgba = applyGeometryToFrame(currentFrame, geometryTransform, f, totalFrames);
+        currentFrame = {
+          rgba: geoRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      if (displacementField) {
+        const modulatedField = applyTemporalConsistency(displacementField, f, totalFrames, 0);
+        const warpedRgba = warpFrame(currentFrame, modulatedField, motionMask?.data);
+        currentFrame = {
+          rgba: warpedRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      if (colorTransform) {
+        const coloredRgba = applyColorTransformToFrame(currentFrame, colorTransform);
+        currentFrame = {
+          rgba: coloredRgba,
+          delay: currentFrame.delay,
+          width: currentFrame.width,
+          height: currentFrame.height,
+        };
+      }
+
+      variationFrames.push({
+        rgba: currentFrame.rgba,
+        delay: currentFrame.delay,
+        width: currentFrame.width,
+        height: currentFrame.height,
+      });
+
+      if (f % 4 === 3) await new Promise((r) => setTimeout(r, 0));
+    }
+
+    const { url, bytes } = await encodeVariation(variationFrames);
+    results.push({
+      id: `v${v + 1}-${variationSeed}`,
+      url, bytes, seed: variationSeed,
+    });
+    onProgress?.(v + 1, count);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  return results;
+}
+
+export async function previewVariation(
+  file: File, similarity: number, seed: number
+): Promise<{ frames: Frame[]; width: number; height: number }> {
+  const originalFrames = await decodeGif(file);
+  if (originalFrames.length === 0) throw new Error('No frames found in GIF');
+
+  const { width, height } = originalFrames[0]!;
+  const totalFrames = originalFrames.length;
+  const displacementField = generateDisplacementField(width, height, similarity, seed);
+  const colorTransform = generateColorTransform(similarity, seed);
+  const previewFrameCount = Math.min(8, totalFrames);
+  const previewFrames: Frame[] = [];
+
+  for (let f = 0; f < previewFrameCount; f++) {
+    const originalFrame = originalFrames[f]!;
+    const warpedRgba = warpFrame(originalFrame, displacementField);
+    const warpedFrame: Frame = {
+      rgba: warpedRgba,
+      delay: originalFrame.delay,
+      width: originalFrame.width,
+      height: originalFrame.height,
+    };
+    const coloredRgba = applyColorTransformToFrame(warpedFrame, colorTransform);
+    previewFrames.push({
+      rgba: coloredRgba,
+      delay: warpedFrame.delay,
+      width: warpedFrame.width,
+      height: warpedFrame.height,
+    });
+  }
+
+  return { frames: previewFrames, width, height };
+}

@@ -569,17 +569,25 @@ export function preserveSilhouette(
   strength: number
 ): Uint8ClampedArray {
   if (strength <= 0) return transformed;
-  const k = Math.min(100, strength) / 100;
+  
+  const guard = Math.min(100, strength) / 100;
+  const threshold = 0.3 * guard; // Порог как в старом воркере
+  
   const out = new Uint8ClampedArray(transformed.length);
-  for (let p = 0; p < mask.length; p++) {
-    const w = ((mask[p] ?? 0) / 255) * k;
-    const i = p * 4;
-    for (let c = 0; c < 4; c++) {
-      const t = transformed[i + c] ?? 0;
-      const o = original[i + c] ?? 0;
-      out[i + c] = t + (o - t) * w;
+  out.set(transformed); // Сначала копируем искаженное изображение
+
+  for (let y = 0; y < mask.length; y++) { // mask.length = width * height
+    const edgeValue = mask[y] / 255;
+    if (edgeValue > threshold) {
+      const di = y * 4;
+      // ЖЕСТКАЯ замена на оригинальный пиксель (как в старом воркере)
+      out[di] = original[di];
+      out[di + 1] = original[di + 1];
+      out[di + 2] = original[di + 2];
+      out[di + 3] = original[di + 3];
     }
   }
+  
   return out;
 }
 

@@ -68,13 +68,14 @@ export type ReassemblyMode = 'blocks' | 'stripes' | 'geometric' | 'organic';
 export interface ModeConfig {
   enabled: boolean;
   strength: number;  // 0-100
-  size: number;      // 0-100 (размер элемента)
+  size: number;      // 0-100
 }
 
-export interface MaskConfig {
+export interface WaveConfig {
   enabled: boolean;
-  strength: number;  // 0-100
-  smoothness: number; // 0-100
+  strength: number;      // 0-100
+  smoothness: number;    // 0-100
+  probability: number;   // 0-100 (шанс применения к зоне)
 }
 
 export interface ReassemblyConfig {
@@ -82,7 +83,7 @@ export interface ReassemblyConfig {
   stripes: ModeConfig;
   geometric: ModeConfig;
   organic: ModeConfig;
-  mask: MaskConfig;
+  wave: WaveConfig; // Волны/жидкое искажение
 }
 
 export interface VariationConfig {

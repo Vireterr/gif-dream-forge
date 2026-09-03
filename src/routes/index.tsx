@@ -69,8 +69,7 @@ function GifVariationStudio() {
     stripes: { enabled: false, strength: 70, size: 15 },
     geometric: { enabled: false, strength: 70, size: 20 },
     organic: { enabled: false, strength: 70, size: 30 },
-    mask: { enabled: true, strength: 50, smoothness: 50 },
-    blendSmoothness: 50,
+    wave: { enabled: true, strength: 50, smoothness: 50, probability: 30 },
   });
 
   const [progress, setProgress] = useState(0);
@@ -216,10 +215,10 @@ function GifVariationStudio() {
     }));
   }
 
-  function updateMask(field: 'enabled' | 'strength' | 'smoothness', value: boolean | number) {
+  function updateWave(field: 'enabled' | 'strength' | 'smoothness' | 'probability', value: boolean | number) {
     setReassemblyConfig((prev) => ({
       ...prev,
-      mask: { ...prev.mask, [field]: value },
+      wave: { ...prev.wave, [field]: value },
     }));
   }
 
@@ -415,7 +414,7 @@ function GifVariationStudio() {
                 ))}
 
                 <div className="border-t border-border pt-3">
-                  <h3 className="label-mono mb-3 text-sm font-semibold">🎨 Коллаж по цвету</h3>
+                  <h3 className="label-mono mb-3 text-sm font-semibold"> Коллаж по цвету</h3>
 
                   <label className="block">
                     <span className="label-mono">Сила перемещения · {colorSegmentation}%</span>
@@ -534,7 +533,7 @@ function GifVariationStudio() {
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
-                        <span className="label-mono text-sm">🔲 Блоки</span>
+                        <span className="label-mono text-sm"> Блоки</span>
                       </label>
                       <span className="font-mono text-xs text-muted-foreground">
                         {reassemblyConfig.blocks.strength}%
@@ -572,7 +571,7 @@ function GifVariationStudio() {
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
-                        <span className="label-mono text-sm"> Полосы</span>
+                        <span className="label-mono text-sm">📊 Полосы</span>
                       </label>
                       <span className="font-mono text-xs text-muted-foreground">
                         {reassemblyConfig.stripes.strength}%
@@ -610,7 +609,7 @@ function GifVariationStudio() {
                           disabled={stage === "generating"}
                           className="accent-accent"
                         />
-                        <span className="label-mono text-sm">🔷 Геометрия</span>
+                        <span className="label-mono text-sm"> Геометрия</span>
                       </label>
                       <span className="font-mono text-xs text-muted-foreground">
                         {reassemblyConfig.geometric.strength}%
@@ -675,53 +674,51 @@ function GifVariationStudio() {
                     </div>
                   </div>
 
-                  {/* Blend smoothness */}
-                  <label className="block mt-3">
-                    <span className="label-mono">Плавность смешения · {reassemblyConfig.blendSmoothness}%</span>
-                    <input
-                      type="range" min={1} max={100} step={1}
-                      value={reassemblyConfig.blendSmoothness}
-                      onChange={(e) => setReassemblyConfig((prev) => ({ ...prev, blendSmoothness: Number(e.target.value) }))}
-                      className="mt-2 w-full accent-primary"
-                      disabled={stage === "generating"}
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Simplex Noise — как плавно режимы перетекают друг в друга
-                    </p>
-                  </label>
-
-                  {/* МАСКА */}
+                  {/* ВОЛНЫ */}
                   <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
-                    <h4 className="label-mono mb-2 text-sm font-semibold">🎭 Маска (зоны режимов)</h4>
+                    <h4 className="label-mono mb-2 text-sm font-semibold">🌊 Волны (жидкое искажение)</h4>
                     <label className="flex items-center justify-between mb-2">
-                      <span className="label-mono text-sm">Включить маску</span>
+                      <span className="label-mono text-sm">Включить волны</span>
                       <input
                         type="checkbox"
-                        checked={reassemblyConfig.mask.enabled}
-                        onChange={(e) => updateMask('enabled', e.target.checked)}
+                        checked={reassemblyConfig.wave.enabled}
+                        onChange={(e) => updateWave('enabled', e.target.checked)}
                         disabled={stage === "generating"}
                         className="accent-primary"
                       />
                     </label>
                     <label className="block mb-2">
-                      <span className="label-mono text-xs">Сила маски · {reassemblyConfig.mask.strength}%</span>
+                      <span className="label-mono text-xs">Сила волн · {reassemblyConfig.wave.strength}%</span>
                       <input
                         type="range" min={0} max={100} step={5}
-                        value={reassemblyConfig.mask.strength}
-                        onChange={(e) => updateMask('strength', Number(e.target.value))}
+                        value={reassemblyConfig.wave.strength}
+                        onChange={(e) => updateWave('strength', Number(e.target.value))}
                         className="mt-1 w-full accent-primary"
-                        disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+                        disabled={stage === "generating" || !reassemblyConfig.wave.enabled}
+                      />
+                    </label>
+                    <label className="block mb-2">
+                      <span className="label-mono text-xs">Плавность · {reassemblyConfig.wave.smoothness}%</span>
+                      <input
+                        type="range" min={1} max={100} step={1}
+                        value={reassemblyConfig.wave.smoothness}
+                        onChange={(e) => updateWave('smoothness', Number(e.target.value))}
+                        className="mt-1 w-full accent-primary"
+                        disabled={stage === "generating" || !reassemblyConfig.wave.enabled}
                       />
                     </label>
                     <label className="block">
-                      <span className="label-mono text-xs">Плавность маски · {reassemblyConfig.mask.smoothness}%</span>
+                      <span className="label-mono text-xs">Вероятность · {reassemblyConfig.wave.probability}%</span>
                       <input
-                        type="range" min={1} max={100} step={1}
-                        value={reassemblyConfig.mask.smoothness}
-                        onChange={(e) => updateMask('smoothness', Number(e.target.value))}
+                        type="range" min={0} max={100} step={5}
+                        value={reassemblyConfig.wave.probability}
+                        onChange={(e) => updateWave('probability', Number(e.target.value))}
                         className="mt-1 w-full accent-primary"
-                        disabled={stage === "generating" || !reassemblyConfig.mask.enabled}
+                        disabled={stage === "generating" || !reassemblyConfig.wave.enabled}
                       />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Шанс применения волн к изображению
+                      </p>
                     </label>
                   </div>
 

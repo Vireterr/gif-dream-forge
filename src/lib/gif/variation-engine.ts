@@ -7,19 +7,7 @@ import { generateGeometryTransform, applyGeometryToFrame } from './geometry';
 import { computeSilhouetteMask } from './silhouette';
 import { computeMotionMask } from './temporal';
 import { applyColorCollage } from './color-segmentation';
-
-// Создаем Web Worker для reassembly
-let reassemblyWorker: Worker | null = null;
-
-function getReassemblyWorker(): Worker {
-  if (!reassemblyWorker) {
-    reassemblyWorker = new Worker(
-      new URL('./reassembly.worker.ts', import.meta.url),
-      { type: 'module' }
-    );
-  }
-  return reassemblyWorker;
-}
+import { applyReassemblyToFrame } from './reassemble';
 
 function applySimilarity(effectStrength: number, similarity: number): number {
   return (effectStrength / 100) * (similarity / 100) * 100;
@@ -32,24 +20,24 @@ export async function generateVariations(
   shouldCancel?: () => boolean
 ): Promise<VariationResult[]> {
   const { similarity, count } = config;
-  
+
   const geometryStrength = applySimilarity(config.geometry ?? 0, similarity);
   const colorStrength = applySimilarity(config.color ?? 0, similarity);
   const flowStrength = applySimilarity(config.flow ?? 0, similarity);
   const colorSegStrength = applySimilarity(config.colorSegmentation ?? 0, similarity);
   const silhouetteStrength = applySimilarity(config.silhouette ?? 0, similarity);
-  
+
   const allowMirror = config.mirror ?? false;
   const blockSize = config.blockSize ?? 50;
   const targetColorsMode = config.targetColorsMode ?? true;
   const targetColors = config.targetColors ?? [];
-  
+
   const reassemblyConfig = config.reassemblyConfig ?? {
     blocks: { enabled: false, strength: 0, size: 30 },
     stripes: { enabled: false, strength: 0, size: 15 },
     geometric: { enabled: false, strength: 0, size: 20 },
     organic: { enabled: false, strength: 0, size: 30 },
-    mask: { enabled: true, strength: 50, smoothness: 50 },
+    wave: { enabled: true, strength: 50, smoothness: 50, probability: 30 },
   };
 
   const originalFrames = await decodeGif(file);
@@ -86,9 +74,9 @@ export async function generateVariations(
       ? generateGeometryTransform(similarity, geometryStrength, variationSeed, allowMirror)
       : null;
 
-    const anyReassemblyEnabled = reassemblyConfig.blocks.enabled || 
-                                  reassemblyConfig.stripes.enabled || 
-                                  reassemblyConfig.geometric.enabled || 
+    const anyReassemblyEnabled = reassemblyConfig.blocks.enabled ||
+                                  reassemblyConfig.stripes.enabled ||
+                                  reassemblyConfig.geometric.enabled ||
                                   reassemblyConfig.organic.enabled;
 
     const enabledTargets = targetColorsMode
@@ -113,22 +101,10 @@ export async function generateVariations(
         };
       }
 
-      // Используем Web Worker для reassembly
       if (anyReassemblyEnabled) {
-        const worker = getReassemblyWorker();
-        const reassembledRgba = await new Promise<Uint8ClampedArray>((resolve) => {
-          worker.onmessage = (e) => {
-            resolve(new Uint8ClampedArray(e.data.rgba));
-          };
-          worker.postMessage({
-            frame: currentFrame,
-            config: reassemblyConfig,
-            seed: variationSeed,
-            silhouetteMask,
-            silhouetteStrength,
-          });
-        });
-
+        const reassembledRgba = applyReassemblyToFrame(
+          currentFrame, blockSize, reassemblyConfig, variationSeed, silhouetteMask, silhouetteStrength
+        );
         currentFrame = {
           rgba: reassembledRgba,
           delay: currentFrame.delay,

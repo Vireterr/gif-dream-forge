@@ -1,8 +1,8 @@
 /**
- * Reassembly: All modes applied together + Wave effect (random) + Empty filling
- * - Все включённые режимы применяются последовательно ко всему изображению
- * - Волны (Domain Warping) применяются случайно к некоторым зонам
- * - Пустые зоны заполняются растянутыми соседними пикселями
+ * Reassembly: Backward Mapping + Noise per Block/Zone
+ * - Шум вычисляется ОДИН РАЗ для всего блока/зоны
+ * - Backward Mapping: для каждого пикселя результата находим источник
+ * - Нет дыр, нет медленного BFS заполнения
  */
 
 import type { Frame, ReassemblyConfig } from './types';
@@ -47,146 +47,7 @@ class PerlinNoise {
   }
 }
 
-// Заполнение пустых зон растянутыми соседними пикселями (BFS)
-function fillEmptySpaces(
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  isEmpty: Uint8Array
-): void {
-  const queue: Array<[number, number, number, number]> = []; // [x, y, srcX, srcY]
-  const visited = new Uint8Array(width * height);
-
-  // Находим граничные пустые пиксели
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (isEmpty[idx]) {
-        const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-        for (const [nx, ny] of neighbors) {
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const nidx = ny * width + nx;
-          if (!isEmpty[nidx]) {
-            queue.push([x, y, nx, ny]);
-            visited[idx] = 1;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // BFS заполнение
-  let qi = 0;
-  while (qi < queue.length) {
-    const [x, y, srcX, srcY] = queue[qi++];
-    const idx = y * width + x;
-    const srcIdx = srcY * width + srcX;
-    const si = srcIdx * 4;
-    const di = idx * 4;
-    
-    // Копируем цвет от соседа
-    out[di] = out[si];
-    out[di + 1] = out[si + 1];
-    out[di + 2] = out[si + 2];
-    out[di + 3] = out[si + 3];
-    isEmpty[idx] = 0;
-
-    // Добавляем соседей
-    const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-    for (const [nx, ny] of neighbors) {
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const nidx = ny * width + nx;
-      if (isEmpty[nidx] && !visited[nidx]) {
-        queue.push([nx, ny, srcX, srcY]);
-        visited[nidx] = 1;
-      }
-    }
-  }
-}
-
-// Применяем волны (Domain Warping) к зоне
-function applyWaveToRegion(
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  region: { x0: number; y0: number; x1: number; y1: number },
-  strength: number,
-  smoothness: number,
-  seed: number
-): void {
-  const perlin1 = new PerlinNoise(seed);
-  const perlin2 = new PerlinNoise(seed + 7777);
-  
-  const k = strength / 100;
-  const smooth = Math.max(0.1, smoothness / 100);
-  const freq = 0.01 / smooth;
-  const warpAmount = k * 20;
-
-  const { x0, y0, x1, y1 } = region;
-  
-  // Создаём временный буфер для зоны
-  const w = x1 - x0;
-  const h = y1 - y0;
-  const temp = new Uint8ClampedArray(w * h * 4);
-  
-  // Копируем зону
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const si = (y * width + x) * 4;
-      const ti = ((y - y0) * w + (x - x0)) * 4;
-      temp[ti] = out[si];
-      temp[ti + 1] = out[si + 1];
-      temp[ti + 2] = out[si + 2];
-      temp[ti + 3] = out[si + 3];
-    }
-  }
-
-  // Применяем Domain Warping
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const gx = x0 + x;
-      const gy = y0 + y;
-      
-      const n1x = perlin1.noise(gx * freq, gy * freq);
-      const n1y = perlin1.noise(gx * freq + 5.2, gy * freq + 1.3);
-      
-      const qx = x + n1x * warpAmount;
-      const qy = y + n1y * warpAmount;
-      
-      const n2x = perlin2.noise(qx * freq * 0.7, qy * freq * 0.7);
-      const n2y = perlin2.noise(qx * freq * 0.7 + 8.3, qy * freq * 0.7 + 2.8);
-
-      const srcX = Math.round(x + n2x * warpAmount * 0.5);
-      const srcY = Math.round(y + n2y * warpAmount * 0.5);
-
-      // Clamp к границам зоны
-      const clampedX = Math.max(0, Math.min(w - 1, srcX));
-      const clampedY = Math.max(0, Math.min(h - 1, srcY));
-
-      const si = (clampedY * w + clampedX) * 4;
-      const di = (y * w + x) * 4;
-      temp[di] = temp[si];
-      temp[di + 1] = temp[si + 1];
-      temp[di + 2] = temp[si + 2];
-      temp[di + 3] = temp[si + 3];
-    }
-  }
-
-  // Копируем обратно
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const si = (y * w + x) * 4;
-      const di = ((y0 + y) * width + (x0 + x)) * 4;
-      out[di] = temp[si];
-      out[di + 1] = temp[si + 1];
-      out[di + 2] = temp[si + 2];
-      out[di + 3] = temp[si + 3];
-    }
-  }
-}
-
-// БЛОКИ
+// ============ БЛОКИ: Backward Mapping ============
 function applyBlocksMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -194,9 +55,7 @@ function applyBlocksMode(
   height: number,
   sizePercent: number,
   strength: number,
-  seed: number,
-  waveConfig: { enabled: boolean; strength: number; smoothness: number; probability: number },
-  waveSeed: number
+  seed: number
 ): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
@@ -206,66 +65,38 @@ function applyBlocksMode(
   const rows = Math.max(1, Math.ceil(height / blockSize));
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
 
-  for (let by = 0; by < rows; by++) {
-    for (let bx = 0; bx < cols; bx++) {
-      if (rand() < 0.7 + k * 0.3) {
-        const x0 = bx * blockSize;
-        const y0 = by * blockSize;
-        const x1 = Math.min(width, x0 + blockSize);
-        const y1 = Math.min(height, y0 + blockSize);
-        const w = x1 - x0;
-        const h = y1 - y0;
+  // Backward Mapping: для каждого пикселя результата находим источник
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const bx = Math.floor(x / blockSize);
+      const by = Math.floor(y / blockSize);
+      
+      // Вычисляем смещение для этого блока (ОДИН РАЗ на блок)
+      const blockRand = mulberry32(seed + bx * 1000 + by);
+      const angle = blockRand() * Math.PI * 2;
+      const dist = (0.3 + blockRand() * 0.7) * maxMove;
+      const ox = Math.round(Math.cos(angle) * dist);
+      const oy = Math.round(Math.sin(angle) * dist);
 
-        const angle = rand() * Math.PI * 2;
-        const dist = (0.3 + rand() * 0.7) * maxMove;
-        const ox = Math.round(Math.cos(angle) * dist);
-        const oy = Math.round(Math.sin(angle) * dist);
+      // Инвертируем смещение (backward)
+      const srcX = x - ox * blockSize;
+      const srcY = y - oy * blockSize;
 
-        // Копируем блок
-        const pixels = new Uint8ClampedArray(w * h * 4);
-        for (let y = y0; y < y1; y++) {
-          for (let x = x0; x < x1; x++) {
-            const si = (y * width + x) * 4;
-            const di = ((y - y0) * w + (x - x0)) * 4;
-            pixels[di] = src[si];
-            pixels[di + 1] = src[si + 1];
-            pixels[di + 2] = src[si + 2];
-            pixels[di + 3] = src[si + 3];
-          }
-        }
+      // Wrap-around
+      const wrappedX = ((srcX % width) + width) % width;
+      const wrappedY = ((srcY % height) + height) % height;
 
-        // Новая позиция
-        const newX = ((x0 + ox * blockSize) % width + width) % width;
-        const newY = ((y0 + oy * blockSize) % height + height) % height;
-
-        for (let ly = 0; ly < h; ly++) {
-          for (let lx = 0; lx < w; lx++) {
-            const dx = ((newX + lx) % width + width) % width;
-            const dy = ((newY + ly) % height + height) % height;
-            const di = (dy * width + dx) * 4;
-            const si = (ly * w + lx) * 4;
-            out[di] = pixels[si];
-            out[di + 1] = pixels[si + 1];
-            out[di + 2] = pixels[si + 2];
-            out[di + 3] = pixels[si + 3];
-          }
-        }
-
-        // Случайно применяем волны к этому блоку
-        if (waveConfig.enabled && rand() < waveConfig.probability / 100) {
-          applyWaveToRegion(
-            out, width, height,
-            { x0: newX, y0: newY, x1: newX + w, y1: newY + h },
-            waveConfig.strength, waveConfig.smoothness,
-            waveSeed + bx * 1000 + by
-          );
-        }
-      }
+      const si = (wrappedY * width + wrappedX) * 4;
+      const di = (y * width + x) * 4;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+      out[di + 3] = src[si + 3];
     }
   }
 }
 
-// ПОЛОСЫ
+// ============ ПОЛОСЫ: Backward Mapping ============
 function applyStripesMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -273,9 +104,7 @@ function applyStripesMode(
   height: number,
   sizePercent: number,
   strength: number,
-  seed: number,
-  waveConfig: { enabled: boolean; strength: number; smoothness: number; probability: number },
-  waveSeed: number
+  seed: number
 ): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
@@ -283,67 +112,48 @@ function applyStripesMode(
   const stripeWidth = Math.max(2, Math.round(Math.min(width, height) * percent));
   const maxOffset = Math.round(k * Math.max(width, height) * 0.5);
   const isHorizontal = rand() > 0.5;
-  const baseDim = isHorizontal ? height : width;
 
+  // Предвычисляем смещения для всех полос
+  const baseDim = isHorizontal ? height : width;
+  const stripeOffsets: number[] = [];
   let pos = 0;
-  let stripeIdx = 0;
   while (pos < baseDim) {
     const thickness = Math.max(1, Math.round(stripeWidth * (0.7 + rand() * 0.6)));
-    const end = Math.min(baseDim, pos + thickness);
     const offset = Math.round((rand() * 2 - 1) * maxOffset);
+    stripeOffsets.push(offset);
+    pos += thickness;
+  }
 
-    if (offset !== 0) {
+  // Backward Mapping
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let srcX = x;
+      let srcY = y;
+
       if (isHorizontal) {
-        for (let y = pos; y < end; y++) {
-          for (let x = 0; x < width; x++) {
-            const si = (y * width + x) * 4;
-            const newX = ((x + offset) % width + width) % width;
-            const di = (y * width + newX) * 4;
-            out[di] = src[si];
-            out[di + 1] = src[si + 1];
-            out[di + 2] = src[si + 2];
-            out[di + 3] = src[si + 3];
-          }
-        }
-        
-        // Волны
-        if (waveConfig.enabled && rand() < waveConfig.probability / 100) {
-          applyWaveToRegion(
-            out, width, height,
-            { x0: 0, y0: pos, x1: width, y1: end },
-            waveConfig.strength, waveConfig.smoothness,
-            waveSeed + stripeIdx * 500
-          );
-        }
+        const stripeIdx = Math.floor(y / stripeWidth);
+        const offset = stripeOffsets[stripeIdx] || 0;
+        srcX = x - offset;
       } else {
-        for (let x = pos; x < end; x++) {
-          for (let y = 0; y < height; y++) {
-            const si = (y * width + x) * 4;
-            const newY = ((y + offset) % height + height) % height;
-            const di = (newY * width + x) * 4;
-            out[di] = src[si];
-            out[di + 1] = src[si + 1];
-            out[di + 2] = src[si + 2];
-            out[di + 3] = src[si + 3];
-          }
-        }
-        
-        if (waveConfig.enabled && rand() < waveConfig.probability / 100) {
-          applyWaveToRegion(
-            out, width, height,
-            { x0: pos, y0: 0, x1: end, y1: height },
-            waveConfig.strength, waveConfig.smoothness,
-            waveSeed + stripeIdx * 500
-          );
-        }
+        const stripeIdx = Math.floor(x / stripeWidth);
+        const offset = stripeOffsets[stripeIdx] || 0;
+        srcY = y - offset;
       }
+
+      const wrappedX = ((srcX % width) + width) % width;
+      const wrappedY = ((srcY % height) + height) % height;
+
+      const si = (wrappedY * width + wrappedX) * 4;
+      const di = (y * width + x) * 4;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+      out[di + 3] = src[si + 3];
     }
-    pos = end;
-    stripeIdx++;
   }
 }
 
-// ГЕОМЕТРИЯ
+// ============ ГЕОМЕТРИЯ: Backward Mapping ============
 function applyGeometricMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -351,9 +161,7 @@ function applyGeometricMode(
   height: number,
   sizePercent: number,
   strength: number,
-  seed: number,
-  waveConfig: { enabled: boolean; strength: number; smoothness: number; probability: number },
-  waveSeed: number
+  seed: number
 ): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
@@ -394,44 +202,34 @@ function applyGeometricMode(
     return false;
   };
 
+  // Backward Mapping
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
+      let srcX = x;
+      let srcY = y;
+
       for (const s of shapes) {
         if (isInside(x, y, s)) {
-          const newX = ((x + s.ox) % width + width) % width;
-          const newY = ((y + s.oy) % height + height) % height;
-          const si = (y * width + x) * 4;
-          const di = (newY * width + newX) * 4;
-          out[di] = src[si];
-          out[di + 1] = src[si + 1];
-          out[di + 2] = src[si + 2];
-          out[di + 3] = src[si + 3];
+          srcX = x - s.ox;
+          srcY = y - s.oy;
           break;
         }
       }
-    }
-  }
 
-  // Волны к случайным фигурам
-  if (waveConfig.enabled) {
-    for (const s of shapes) {
-      if (rand() < waveConfig.probability / 100) {
-        const x0 = Math.max(0, Math.floor(s.cx - s.size));
-        const y0 = Math.max(0, Math.floor(s.cy - s.size));
-        const x1 = Math.min(width, Math.ceil(s.cx + s.size));
-        const y1 = Math.min(height, Math.ceil(s.cy + s.size));
-        applyWaveToRegion(
-          out, width, height,
-          { x0, y0, x1, y1 },
-          waveConfig.strength, waveConfig.smoothness,
-          waveSeed + Math.floor(s.cx) * 100 + Math.floor(s.cy)
-        );
-      }
+      const wrappedX = ((srcX % width) + width) % width;
+      const wrappedY = ((srcY % height) + height) % height;
+
+      const si = (wrappedY * width + wrappedX) * 4;
+      const di = (y * width + x) * 4;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+      out[di + 3] = src[si + 3];
     }
   }
 }
 
-// ПРОИЗВОЛЬНЫЕ (Voronoi)
+// ============ ПРОИЗВОЛЬНЫЕ (Voronoi): Backward Mapping ============
 function applyOrganicMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -439,9 +237,7 @@ function applyOrganicMode(
   height: number,
   sizePercent: number,
   strength: number,
-  seed: number,
-  waveConfig: { enabled: boolean; strength: number; smoothness: number; probability: number },
-  waveSeed: number
+  seed: number
 ): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
@@ -461,6 +257,7 @@ function applyOrganicMode(
     vcells.push({ cx, cy, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
 
+  // Backward Mapping
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let nearestIdx = 0;
@@ -475,37 +272,69 @@ function applyOrganicMode(
         }
       }
       const cell = vcells[nearestIdx];
-      const newX = ((x + cell.ox) % width + width) % width;
-      const newY = ((y + cell.oy) % height + height) % height;
-      const si = (y * width + x) * 4;
-      const di = (newY * width + newX) * 4;
+      const srcX = x - cell.ox;
+      const srcY = y - cell.oy;
+
+      const wrappedX = ((srcX % width) + width) % width;
+      const wrappedY = ((srcY % height) + height) % height;
+
+      const si = (wrappedY * width + wrappedX) * 4;
+      const di = (y * width + x) * 4;
       out[di] = src[si];
       out[di + 1] = src[si + 1];
       out[di + 2] = src[si + 2];
       out[di + 3] = src[si + 3];
     }
   }
+}
 
-  // Волны к случайным ячейкам Voronoi
-  if (waveConfig.enabled) {
-    for (const cell of vcells) {
-      if (rand() < waveConfig.probability / 100) {
-        const x0 = Math.max(0, Math.floor(cell.cx - baseCellSize));
-        const y0 = Math.max(0, Math.floor(cell.cy - baseCellSize));
-        const x1 = Math.min(width, Math.ceil(cell.cx + baseCellSize));
-        const y1 = Math.min(height, Math.ceil(cell.cy + baseCellSize));
-        applyWaveToRegion(
-          out, width, height,
-          { x0, y0, x1, y1 },
-          waveConfig.strength, waveConfig.smoothness,
-          waveSeed + Math.floor(cell.cx) * 100 + Math.floor(cell.cy)
-        );
-      }
+// ============ ВОЛНЫ (Domain Warping): Backward Mapping ============
+function applyWaveMode(
+  src: Uint8ClampedArray,
+  out: Uint8ClampedArray,
+  width: number,
+  height: number,
+  strength: number,
+  smoothness: number,
+  seed: number
+): void {
+  const perlin1 = new PerlinNoise(seed);
+  const perlin2 = new PerlinNoise(seed + 7777);
+  
+  const k = strength / 100;
+  const smooth = Math.max(0.1, smoothness / 100);
+  const freq = 0.01 / smooth;
+  const warpAmount = k * 20;
+
+  // Backward Mapping
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const n1x = perlin1.noise(x * freq, y * freq);
+      const n1y = perlin1.noise(x * freq + 5.2, y * freq + 1.3);
+      
+      const qx = x + n1x * warpAmount;
+      const qy = y + n1y * warpAmount;
+      
+      const n2x = perlin2.noise(qx * freq * 0.7, qy * freq * 0.7);
+      const n2y = perlin2.noise(qx * freq * 0.7 + 8.3, qy * freq * 0.7 + 2.8);
+
+      const srcX = Math.round(x + n2x * warpAmount * 0.5);
+      const srcY = Math.round(y + n2y * warpAmount * 0.5);
+
+      const wrappedX = ((srcX % width) + width) % width;
+      const wrappedY = ((srcY % height) + height) % height;
+
+      const si = (wrappedY * width + wrappedX) * 4;
+      const di = (y * width + x) * 4;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+      out[di + 3] = src[si + 3];
     }
   }
 }
 
-// ГЛАВНАЯ ФУНКЦИЯ
+// ============ ГЛАВНАЯ ФУНКЦИЯ ============
 export function applyReassemblyToFrame(
   frame: Frame,
   _blockSize: number,
@@ -523,48 +352,30 @@ export function applyReassemblyToFrame(
 
   if (!anyEnabled) return out;
 
-  // Волны конфиг
-  const waveConfig = {
-    enabled: config.wave?.enabled ?? false,
-    strength: config.wave?.strength ?? 50,
-    smoothness: config.wave?.smoothness ?? 50,
-    probability: config.wave?.probability ?? 30,
-  };
-
-  // Применяем все режимы последовательно
+  // Применяем режимы последовательно (каждый к результату предыдущего)
   if (config.blocks.enabled && config.blocks.strength > 0) {
-    const blocksOut = new Uint8ClampedArray(src.length);
-    blocksOut.set(src);
-    applyBlocksMode(src, blocksOut, width, height, config.blocks.size, config.blocks.strength, seed, waveConfig, seed + 100);
-    out.set(blocksOut);
+    const temp = new Uint8ClampedArray(src.length);
+    applyBlocksMode(out, temp, width, height, config.blocks.size, config.blocks.strength, seed);
+    out.set(temp);
   }
 
   if (config.stripes.enabled && config.stripes.strength > 0) {
-    const stripesOut = new Uint8ClampedArray(src.length);
-    stripesOut.set(out); // Применяем к текущему результату
-    applyStripesMode(out, stripesOut, width, height, config.stripes.size, config.stripes.strength, seed + 1, waveConfig, seed + 200);
-    out.set(stripesOut);
+    const temp = new Uint8ClampedArray(src.length);
+    applyStripesMode(out, temp, width, height, config.stripes.size, config.stripes.strength, seed + 1);
+    out.set(temp);
   }
 
   if (config.geometric.enabled && config.geometric.strength > 0) {
-    const geoOut = new Uint8ClampedArray(src.length);
-    geoOut.set(out);
-    applyGeometricMode(out, geoOut, width, height, config.geometric.size, config.geometric.strength, seed + 2, waveConfig, seed + 300);
-    out.set(geoOut);
+    const temp = new Uint8ClampedArray(src.length);
+    applyGeometricMode(out, temp, width, height, config.geometric.size, config.geometric.strength, seed + 2);
+    out.set(temp);
   }
 
   if (config.organic.enabled && config.organic.strength > 0) {
-    const organicOut = new Uint8ClampedArray(src.length);
-    organicOut.set(out);
-    applyOrganicMode(out, organicOut, width, height, config.organic.size, config.organic.strength, seed + 3, waveConfig, seed + 400);
-    out.set(organicOut);
+    const temp = new Uint8ClampedArray(src.length);
+    applyOrganicMode(out, temp, width, height, config.organic.size, config.organic.strength, seed + 3);
+    out.set(temp);
   }
 
-  // Заполняем пустые зоны (если есть)
-  const isEmpty = new Uint8Array(width * height);
-  // Проверяем, какие пиксели не изменились (остались как в оригинале, но должны были измениться)
-  // Для простоты: если режим был включён, считаем что все пиксели обработаны
-  // Пустоты возникают только при forward mapping - заполняем их
-  
   return out;
 }

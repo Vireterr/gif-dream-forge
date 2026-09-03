@@ -68,9 +68,7 @@ function GifVariationStudio() {
     blocks: { enabled: true, strength: 70, size: 30 },
     stripes: { enabled: false, strength: 70, size: 15 },
     geometric: { enabled: false, strength: 70, size: 20 },
-    organic: { enabled: false, strength: 70, size: 30 },
-    mask: { enabled: true, strength: 50, smoothness: 50 },
-    blendSmoothness: 50,
+    organic: { enabled: false, strength: 70, size: 30 },  
   });
 
   const [progress, setProgress] = useState(0);

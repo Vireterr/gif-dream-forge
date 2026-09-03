@@ -46,27 +46,24 @@ class PerlinNoise {
   }
 }
 
+// ВСЕГДА генерируем маску, игнорируя конфиг (так как ты удалил её из UI)
 function generateMask(
   width: number,
   height: number,
-  config: ReassemblyConfig,
+  _config: ReassemblyConfig,
   seed: number
 ): Uint8Array {
   const mask = new Uint8Array(width * height);
-  if (!config.mask.enabled || config.mask.strength === 0) {
-    mask.fill(255);
-    return mask;
-  }
   const simplex = new SimplexNoise(seed);
-  const smoothness = Math.max(0.1, config.mask.smoothness / 100);
+  const smoothness = 0.4; // Плавные переходы для эффекта стекла
   const freq = 0.005 / smoothness;
-  const strength = config.mask.strength / 100;
+  
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const nx = x * freq;
       const ny = y * freq;
       const n = (simplex.noise(nx, ny) + 1) / 2;
-      mask[y * width + x] = Math.round(n * 255 * strength);
+      mask[y * width + x] = Math.round(n * 255);
     }
   }
   return mask;
@@ -334,12 +331,16 @@ self.onmessage = (e: MessageEvent) => {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
   out.set(src);
+  
   const anyEnabled = config.blocks.enabled || config.stripes.enabled ||
                      config.geometric.enabled || config.organic.enabled;
+  
   if (!anyEnabled) {
     self.postMessage({ rgba: out.buffer });
     return;
   }
+
+  // ВСЕГДА генерируем маску (без проверок конфига)
   const mask = generateMask(width, height, config, seed);
 
   // БЛОКИ — плавное смешивание через alpha
@@ -352,7 +353,6 @@ self.onmessage = (e: MessageEvent) => {
         const idx = y * width + x;
         const di = idx * 4;
         const alpha = mask[idx] / 255; // 0.0 - 1.0
-        // Смешиваем: оригинал * (1 - alpha) + эффект * alpha
         out[di] = out[di] * (1 - alpha) + blocksOut[di] * alpha;
         out[di + 1] = out[di + 1] * (1 - alpha) + blocksOut[di + 1] * alpha;
         out[di + 2] = out[di + 2] * (1 - alpha) + blocksOut[di + 2] * alpha;
@@ -418,5 +418,6 @@ self.onmessage = (e: MessageEvent) => {
   if (silhouetteMask && silhouetteStrength > 0) {
     applySilhouetteProtection(out, src, width, height, silhouetteMask, silhouetteStrength);
   }
+
   self.postMessage({ rgba: out.buffer });
 };

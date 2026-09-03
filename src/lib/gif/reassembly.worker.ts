@@ -2,6 +2,7 @@
 * Web Worker для обработки кадров GIF
 * Выносит тяжелые вычисления в отдельный поток
 * Эффект "стеклышек": плавное смешивание режимов через alpha маски
+* Clamp: изображение не улетает за кадр
 */
 import type { Frame, ReassemblyConfig } from './engine';
 import { mulberry32 } from '../utils/noise';
@@ -45,7 +46,6 @@ class PerlinNoise {
   }
 }
 
-// ВСЕГДА генерируем маску для эффекта "стекла", игнорируя настройки UI
 function generateMask(
   width: number,
   height: number,
@@ -53,13 +53,14 @@ function generateMask(
   seed: number
 ): Uint8Array {
   const mask = new Uint8Array(width * height);
-  
-  // Фиксированные параметры для эффекта стекла
+  if (!config.mask.enabled || config.mask.strength === 0) {
+    mask.fill(255);
+    return mask;
+  }
   const simplex = new SimplexNoise(seed);
-  const smoothness = 0.4; // Плавные переходы
+  const smoothness = Math.max(0.1, config.mask.smoothness / 100);
   const freq = 0.005 / smoothness;
-  const strength = 1.0; // Максимальный диапазон 0-255
-
+  const strength = config.mask.strength / 100;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const nx = x * freq;
@@ -112,12 +113,14 @@ function applyBlocksMode(
             pixels[di + 3] = src[si + 3];
           }
         }
-        const newX = ((x0 + ox * blockSize) % width + width) % width;
-        const newY = ((y0 + oy * blockSize) % height + height) % height;
+        // CLAMP вместо модульной арифметики
+        const newX = Math.max(0, Math.min(width - blockSize, x0 + ox * blockSize));
+        const newY = Math.max(0, Math.min(height - blockSize, y0 + oy * blockSize));
         for (let ly = 0; ly < h; ly++) {
           for (let lx = 0; lx < w; lx++) {
-            const dx = ((newX + lx) % width + width) % width;
-            const dy = ((newY + ly) % height + height) % height;
+            // CLAMP вместо модульной арифметики
+            const dx = Math.max(0, Math.min(width - 1, newX + lx));
+            const dy = Math.max(0, Math.min(height - 1, newY + ly));
             const di = (dy * width + dx) * 4;
             const si = (ly * w + lx) * 4;
             out[di] = pixels[si];
@@ -157,7 +160,8 @@ function applyStripesMode(
         for (let y = pos; y < end; y++) {
           for (let x = 0; x < width; x++) {
             const si = (y * width + x) * 4;
-            const newX = ((x + offset) % width + width) % width;
+            // CLAMP вместо модульной арифметики
+            const newX = Math.max(0, Math.min(width - 1, x + offset));
             const di = (y * width + newX) * 4;
             out[di] = src[si];
             out[di + 1] = src[si + 1];
@@ -169,7 +173,8 @@ function applyStripesMode(
         for (let x = pos; x < end; x++) {
           for (let y = 0; y < height; y++) {
             const si = (y * width + x) * 4;
-            const newY = ((y + offset) % height + height) % height;
+            // CLAMP вместо модульной арифметики
+            const newY = Math.max(0, Math.min(height - 1, y + offset));
             const di = (newY * width + x) * 4;
             out[di] = src[si];
             out[di + 1] = src[si + 1];
@@ -231,8 +236,9 @@ function applyGeometricMode(
     for (let x = 0; x < width; x++) {
       for (const s of shapes) {
         if (isInside(x, y, s)) {
-          const newX = ((x + s.ox) % width + width) % width;
-          const newY = ((y + s.oy) % height + height) % height;
+          // CLAMP вместо модульной арифметики
+          const newX = Math.max(0, Math.min(width - 1, x + s.ox));
+          const newY = Math.max(0, Math.min(height - 1, y + s.oy));
           const si = (y * width + x) * 4;
           const di = (newY * width + newX) * 4;
           out[di] = src[si];
@@ -270,4 +276,147 @@ function applyOrganicMode(
     const dist = (0.3 + rand() * 0.7) * maxMove;
     vcells.push({ cx, cy, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
-  for (let y = 0; y < height;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let nearestIdx = 0;
+      let nearestDist = Infinity;
+      for (let i = 0; i < vcells.length; i++) {
+        const dx = x - vcells[i].cx;
+        const dy = y - vcells[i].cy;
+        const dist = dx * dx + dy * dy;
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearestIdx = i;
+        }
+      }
+      const cell = vcells[nearestIdx];
+      // CLAMP вместо модульной арифметики
+      const newX = Math.max(0, Math.min(width - 1, x + cell.ox));
+      const newY = Math.max(0, Math.min(height - 1, y + cell.oy));
+      const si = (y * width + x) * 4;
+      const di = (newY * width + newX) * 4;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+      out[di + 3] = src[si + 3];
+    }
+  }
+}
+
+function applySilhouetteProtection(
+  out: Uint8ClampedArray,
+  src: Uint8ClampedArray,
+  width: number,
+  height: number,
+  silhouetteMask: Uint8Array,
+  silhouetteStrength: number
+): void {
+  const guard = Math.min(100, silhouetteStrength) / 100;
+  const threshold = 0.3 * guard;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const edgeValue = silhouetteMask[idx] / 255;
+      if (edgeValue > threshold) {
+        const di = idx * 4;
+        out[di] = src[di];
+        out[di + 1] = src[di + 1];
+        out[di + 2] = src[di + 2];
+        out[di + 3] = src[di + 3];
+      }
+    }
+  }
+}
+
+// Worker message handler
+self.onmessage = (e: MessageEvent) => {
+  const { frame, config, seed, silhouetteMask, silhouetteStrength } = e.data;
+  const { rgba: src, width, height } = frame;
+  const out = new Uint8ClampedArray(src.length);
+  out.set(src);
+  const anyEnabled = config.blocks.enabled || config.stripes.enabled ||
+                     config.geometric.enabled || config.organic.enabled;
+  if (!anyEnabled) {
+    self.postMessage({ rgba: out.buffer });
+    return;
+  }
+  const mask = generateMask(width, height, config, seed);
+
+  // БЛОКИ — плавное смешивание через alpha
+  if (config.blocks.enabled && config.blocks.strength > 0) {
+    const blocksOut = new Uint8ClampedArray(src.length);
+    blocksOut.set(src);
+    applyBlocksMode(src, blocksOut, width, height, config.blocks.size, config.blocks.strength, seed);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const di = idx * 4;
+        const alpha = mask[idx] / 255; // 0.0 - 1.0
+        // Смешиваем: оригинал * (1 - alpha) + эффект * alpha
+        out[di] = out[di] * (1 - alpha) + blocksOut[di] * alpha;
+        out[di + 1] = out[di + 1] * (1 - alpha) + blocksOut[di + 1] * alpha;
+        out[di + 2] = out[di + 2] * (1 - alpha) + blocksOut[di + 2] * alpha;
+        out[di + 3] = out[di + 3] * (1 - alpha) + blocksOut[di + 3] * alpha;
+      }
+    }
+  }
+
+  // ПОЛОСЫ — плавное смешивание через alpha
+  if (config.stripes.enabled && config.stripes.strength > 0) {
+    const stripesOut = new Uint8ClampedArray(src.length);
+    stripesOut.set(src);
+    applyStripesMode(src, stripesOut, width, height, config.stripes.size, config.stripes.strength, seed + 1);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const di = idx * 4;
+        const alpha = mask[idx] / 255;
+        out[di] = out[di] * (1 - alpha) + stripesOut[di] * alpha;
+        out[di + 1] = out[di + 1] * (1 - alpha) + stripesOut[di + 1] * alpha;
+        out[di + 2] = out[di + 2] * (1 - alpha) + stripesOut[di + 2] * alpha;
+        out[di + 3] = out[di + 3] * (1 - alpha) + stripesOut[di + 3] * alpha;
+      }
+    }
+  }
+
+  // ГЕОМЕТРИЯ — плавное смешивание через alpha
+  if (config.geometric.enabled && config.geometric.strength > 0) {
+    const geoOut = new Uint8ClampedArray(src.length);
+    geoOut.set(src);
+    applyGeometricMode(src, geoOut, width, height, config.geometric.size, config.geometric.strength, seed + 2);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const di = idx * 4;
+        const alpha = mask[idx] / 255;
+        out[di] = out[di] * (1 - alpha) + geoOut[di] * alpha;
+        out[di + 1] = out[di + 1] * (1 - alpha) + geoOut[di + 1] * alpha;
+        out[di + 2] = out[di + 2] * (1 - alpha) + geoOut[di + 2] * alpha;
+        out[di + 3] = out[di + 3] * (1 - alpha) + geoOut[di + 3] * alpha;
+      }
+    }
+  }
+
+  // ОРГАНИКА — плавное смешивание через alpha
+  if (config.organic.enabled && config.organic.strength > 0) {
+    const organicOut = new Uint8ClampedArray(src.length);
+    organicOut.set(src);
+    applyOrganicMode(src, organicOut, width, height, config.organic.size, config.organic.strength, seed + 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const di = idx * 4;
+        const alpha = mask[idx] / 255;
+        out[di] = out[di] * (1 - alpha) + organicOut[di] * alpha;
+        out[di + 1] = out[di + 1] * (1 - alpha) + organicOut[di + 1] * alpha;
+        out[di + 2] = out[di + 2] * (1 - alpha) + organicOut[di + 2] * alpha;
+        out[di + 3] = out[di + 3] * (1 - alpha) + organicOut[di + 3] * alpha;
+      }
+    }
+  }
+
+  if (silhouetteMask && silhouetteStrength > 0) {
+    applySilhouetteProtection(out, src, width, height, silhouetteMask, silhouetteStrength);
+  }
+  self.postMessage({ rgba: out.buffer });
+};

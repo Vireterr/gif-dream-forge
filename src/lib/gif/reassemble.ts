@@ -1,53 +1,11 @@
 /**
  * Reassembly: Backward Mapping + Noise per Block/Zone
- * - Шум вычисляется ОДИН РАЗ для всего блока/зоны
- * - Backward Mapping: для каждого пикселя результата находим источник
- * - Нет дыр, нет медленного BFS заполнения
  */
 
 import type { Frame, ReassemblyConfig } from './types';
 import { mulberry32 } from '../utils/noise';
-import { SimplexNoise } from './simplex';
 
-class PerlinNoise {
-  private perm: Uint8Array;
-  constructor(seed: number) {
-    const rand = mulberry32(seed);
-    this.perm = new Uint8Array(512);
-    const p = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) p[i] = i;
-    for (let i = 255; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [p[i], p[j]] = [p[j], p[i]];
-    }
-    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
-  }
-  private fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
-  private lerp(a: number, b: number, t: number) { return a + t * (b - a); }
-  private grad(hash: number, x: number, y: number) {
-    const h = hash & 3;
-    const u = h < 2 ? x : y;
-    const v = h < 2 ? y : x;
-    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
-  }
-  noise(x: number, y: number): number {
-    const X = Math.floor(x) & 255;
-    const Y = Math.floor(y) & 255;
-    x -= Math.floor(x);
-    y -= Math.floor(y);
-    const u = this.fade(x);
-    const v = this.fade(y);
-    const A = this.perm[X] + Y;
-    const B = this.perm[X + 1] + Y;
-    return this.lerp(
-      this.lerp(this.grad(this.perm[A], x, y), this.grad(this.perm[B], x - 1, y), u),
-      this.lerp(this.grad(this.perm[A + 1], x, y - 1), this.grad(this.perm[B + 1], x - 1, y - 1), u),
-      v
-    );
-  }
-}
-
-// ============ БЛОКИ: Backward Mapping ============
+// ============ БЛОКИ ============
 function applyBlocksMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -57,7 +15,6 @@ function applyBlocksMode(
   strength: number,
   seed: number
 ): void {
-  const rand = mulberry32(seed);
   const k = strength / 100;
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const blockSize = Math.max(4, Math.round(Math.min(width, height) * percent));
@@ -65,24 +22,20 @@ function applyBlocksMode(
   const rows = Math.max(1, Math.ceil(height / blockSize));
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
 
-  // Backward Mapping: для каждого пикселя результата находим источник
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const bx = Math.floor(x / blockSize);
       const by = Math.floor(y / blockSize);
-      
-      // Вычисляем смещение для этого блока (ОДИН РАЗ на блок)
+
       const blockRand = mulberry32(seed + bx * 1000 + by);
       const angle = blockRand() * Math.PI * 2;
       const dist = (0.3 + blockRand() * 0.7) * maxMove;
       const ox = Math.round(Math.cos(angle) * dist);
       const oy = Math.round(Math.sin(angle) * dist);
 
-      // Инвертируем смещение (backward)
       const srcX = x - ox * blockSize;
       const srcY = y - oy * blockSize;
 
-      // Wrap-around
       const wrappedX = ((srcX % width) + width) % width;
       const wrappedY = ((srcY % height) + height) % height;
 
@@ -96,7 +49,7 @@ function applyBlocksMode(
   }
 }
 
-// ============ ПОЛОСЫ: Backward Mapping ============
+// ============ ПОЛОСЫ ============
 function applyStripesMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -113,7 +66,6 @@ function applyStripesMode(
   const maxOffset = Math.round(k * Math.max(width, height) * 0.5);
   const isHorizontal = rand() > 0.5;
 
-  // Предвычисляем смещения для всех полос
   const baseDim = isHorizontal ? height : width;
   const stripeOffsets: number[] = [];
   let pos = 0;
@@ -124,7 +76,6 @@ function applyStripesMode(
     pos += thickness;
   }
 
-  // Backward Mapping
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let srcX = x;
@@ -153,7 +104,7 @@ function applyStripesMode(
   }
 }
 
-// ============ ГЕОМЕТРИЯ: Backward Mapping ============
+// ============ ГЕОМЕТРИЯ ============
 function applyGeometricMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -202,7 +153,6 @@ function applyGeometricMode(
     return false;
   };
 
-  // Backward Mapping
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let srcX = x;
@@ -229,7 +179,7 @@ function applyGeometricMode(
   }
 }
 
-// ============ ПРОИЗВОЛЬНЫЕ (Voronoi): Backward Mapping ============
+// ============ ПРОИЗВОЛЬНЫЕ (Voronoi) ============
 function applyOrganicMode(
   src: Uint8ClampedArray,
   out: Uint8ClampedArray,
@@ -257,7 +207,6 @@ function applyOrganicMode(
     vcells.push({ cx, cy, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
 
-  // Backward Mapping
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let nearestIdx = 0;
@@ -288,52 +237,6 @@ function applyOrganicMode(
   }
 }
 
-// ============ ВОЛНЫ (Domain Warping): Backward Mapping ============
-function applyWaveMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  strength: number,
-  smoothness: number,
-  seed: number
-): void {
-  const perlin1 = new PerlinNoise(seed);
-  const perlin2 = new PerlinNoise(seed + 7777);
-  
-  const k = strength / 100;
-  const smooth = Math.max(0.1, smoothness / 100);
-  const freq = 0.01 / smooth;
-  const warpAmount = k * 20;
-
-  // Backward Mapping
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const n1x = perlin1.noise(x * freq, y * freq);
-      const n1y = perlin1.noise(x * freq + 5.2, y * freq + 1.3);
-      
-      const qx = x + n1x * warpAmount;
-      const qy = y + n1y * warpAmount;
-      
-      const n2x = perlin2.noise(qx * freq * 0.7, qy * freq * 0.7);
-      const n2y = perlin2.noise(qx * freq * 0.7 + 8.3, qy * freq * 0.7 + 2.8);
-
-      const srcX = Math.round(x + n2x * warpAmount * 0.5);
-      const srcY = Math.round(y + n2y * warpAmount * 0.5);
-
-      const wrappedX = ((srcX % width) + width) % width;
-      const wrappedY = ((srcY % height) + height) % height;
-
-      const si = (wrappedY * width + wrappedX) * 4;
-      const di = (y * width + x) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
-    }
-  }
-}
-
 // ============ ГЛАВНАЯ ФУНКЦИЯ ============
 export function applyReassemblyToFrame(
   frame: Frame,
@@ -347,12 +250,11 @@ export function applyReassemblyToFrame(
   const out = new Uint8ClampedArray(src.length);
   out.set(src);
 
-  const anyEnabled = config.blocks.enabled || config.stripes.enabled || 
+  const anyEnabled = config.blocks.enabled || config.stripes.enabled ||
                      config.geometric.enabled || config.organic.enabled;
 
   if (!anyEnabled) return out;
 
-  // Применяем режимы последовательно (каждый к результату предыдущего)
   if (config.blocks.enabled && config.blocks.strength > 0) {
     const temp = new Uint8ClampedArray(src.length);
     applyBlocksMode(out, temp, width, height, config.blocks.size, config.blocks.strength, seed);

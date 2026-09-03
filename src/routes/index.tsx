@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef } from "react";
-import type { VariationResult, TargetColor, ReassemblyConfig } from "../lib/gif/types";
-import { generateVariations } from "../lib/gif/variation-engine";
+import type { VariationResult, TargetColor, ReassemblyConfig } from "../lib/gif/engine";
+import { generateVariations } from "../lib/gif/engine";
 
 type Stage = "idle" | "decoding" | "ready" | "generating";
 

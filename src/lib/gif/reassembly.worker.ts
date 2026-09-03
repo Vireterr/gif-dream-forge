@@ -3,7 +3,7 @@
  * Выносит тяжелые вычисления в отдельный поток
  */
 
-import type { Frame, ReassemblyConfig } from './types';
+import type { Frame, ReassemblyConfig } from './engine';
 import { mulberry32 } from '../utils/noise';
 import { SimplexNoise } from './simplex';
 

@@ -1,129 +1,168 @@
-/**
- * Reassembly: Backward Mapping + Noise per Block/Zone
- */
-
 import type { Frame, ReassemblyConfig } from './types';
 import { mulberry32 } from '../utils/noise';
+import { SimplexNoise } from './simplex';
 
-// ============ БЛОКИ ============
-function applyBlocksMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number
-): void {
+class PerlinNoise {
+  private perm: Uint8Array;
+  constructor(seed: number) {
+    const rand = mulberry32(seed);
+    this.perm = new Uint8Array(512);
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+  }
+  private fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  private lerp(a: number, b: number, t: number) { return a + t * (b - a); }
+  private grad(hash: number, x: number, y: number) {
+    const h = hash & 3;
+    const u = h < 2 ? x : y;
+    const v = h < 2 ? y : x;
+    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+  }
+  noise(x: number, y: number): number {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    x -= Math.floor(x);
+    y -= Math.floor(y);
+    const u = this.fade(x);
+    const v = this.fade(y);
+    const A = this.perm[X] + Y;
+    const B = this.perm[X + 1] + Y;
+    return this.lerp(
+      this.lerp(this.grad(this.perm[A], x, y), this.grad(this.perm[B], x - 1, y), u),
+      this.lerp(this.grad(this.perm[A + 1], x, y - 1), this.grad(this.perm[B + 1], x - 1, y - 1), u),
+      v
+    );
+  }
+}
+
+function generateMask(width: number, height: number, config: ReassemblyConfig, seed: number): Uint8Array {
+  const mask = new Uint8Array(width * height);
+  if (!config.mask.enabled || config.mask.strength === 0) {
+    mask.fill(255);
+    return mask;
+  }
+  const simplex = new SimplexNoise(seed);
+  const smoothness = Math.max(0.1, config.mask.smoothness / 100);
+  const freq = 0.005 / smoothness;
+  const strength = config.mask.strength / 100;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const n = (simplex.noise(x * freq, y * freq) + 1) / 2;
+      mask[y * width + x] = Math.round(n * 255 * strength);
+    }
+  }
+  return mask;
+}
+
+function applyBlocksMode(src: Uint8ClampedArray, out: Uint8ClampedArray, width: number, height: number, sizePercent: number, strength: number, seed: number): void {
+  const rand = mulberry32(seed);
   const k = strength / 100;
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const blockSize = Math.max(4, Math.round(Math.min(width, height) * percent));
   const cols = Math.max(1, Math.ceil(width / blockSize));
   const rows = Math.max(1, Math.ceil(height / blockSize));
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const bx = Math.floor(x / blockSize);
-      const by = Math.floor(y / blockSize);
-
-      const blockRand = mulberry32(seed + bx * 1000 + by);
-      const angle = blockRand() * Math.PI * 2;
-      const dist = (0.3 + blockRand() * 0.7) * maxMove;
-      const ox = Math.round(Math.cos(angle) * dist);
-      const oy = Math.round(Math.sin(angle) * dist);
-
-      const srcX = x - ox * blockSize;
-      const srcY = y - oy * blockSize;
-
-      const wrappedX = ((srcX % width) + width) % width;
-      const wrappedY = ((srcY % height) + height) % height;
-
-      const si = (wrappedY * width + wrappedX) * 4;
-      const di = (y * width + x) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
+  for (let by = 0; by < rows; by++) {
+    for (let bx = 0; bx < cols; bx++) {
+      if (rand() < 0.7 + k * 0.3) {
+        const x0 = bx * blockSize;
+        const y0 = by * blockSize;
+        const x1 = Math.min(width, x0 + blockSize);
+        const y1 = Math.min(height, y0 + blockSize);
+        const w = x1 - x0;
+        const h = y1 - y0;
+        const angle = rand() * Math.PI * 2;
+        const dist = (0.3 + rand() * 0.7) * maxMove;
+        const ox = Math.round(Math.cos(angle) * dist);
+        const oy = Math.round(Math.sin(angle) * dist);
+        const pixels = new Uint8ClampedArray(w * h * 4);
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const si = (y * width + x) * 4;
+            const di = ((y - y0) * w + (x - x0)) * 4;
+            pixels[di] = src[si];
+            pixels[di + 1] = src[si + 1];
+            pixels[di + 2] = src[si + 2];
+            pixels[di + 3] = src[si + 3];
+          }
+        }
+        const newX = ((x0 + ox * blockSize) % width + width) % width;
+        const newY = ((y0 + oy * blockSize) % height + height) % height;
+        for (let ly = 0; ly < h; ly++) {
+          for (let lx = 0; lx < w; lx++) {
+            const dx = ((newX + lx) % width + width) % width;
+            const dy = ((newY + ly) % height + height) % height;
+            const di = (dy * width + dx) * 4;
+            const si = (ly * w + lx) * 4;
+            out[di] = pixels[si];
+            out[di + 1] = pixels[si + 1];
+            out[di + 2] = pixels[si + 2];
+            out[di + 3] = pixels[si + 3];
+          }
+        }
+      }
     }
   }
 }
 
-// ============ ПОЛОСЫ ============
-function applyStripesMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number
-): void {
+function applyStripesMode(src: Uint8ClampedArray, out: Uint8ClampedArray, width: number, height: number, sizePercent: number, strength: number, seed: number): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
   const percent = Math.max(2, Math.min(50, sizePercent)) / 100;
   const stripeWidth = Math.max(2, Math.round(Math.min(width, height) * percent));
   const maxOffset = Math.round(k * Math.max(width, height) * 0.5);
   const isHorizontal = rand() > 0.5;
-
   const baseDim = isHorizontal ? height : width;
-  const stripeOffsets: number[] = [];
   let pos = 0;
   while (pos < baseDim) {
     const thickness = Math.max(1, Math.round(stripeWidth * (0.7 + rand() * 0.6)));
+    const end = Math.min(baseDim, pos + thickness);
     const offset = Math.round((rand() * 2 - 1) * maxOffset);
-    stripeOffsets.push(offset);
-    pos += thickness;
-  }
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let srcX = x;
-      let srcY = y;
-
+    if (offset !== 0) {
       if (isHorizontal) {
-        const stripeIdx = Math.floor(y / stripeWidth);
-        const offset = stripeOffsets[stripeIdx] || 0;
-        srcX = x - offset;
+        for (let y = pos; y < end; y++) {
+          for (let x = 0; x < width; x++) {
+            const si = (y * width + x) * 4;
+            const newX = ((x + offset) % width + width) % width;
+            const di = (y * width + newX) * 4;
+            out[di] = src[si];
+            out[di + 1] = src[si + 1];
+            out[di + 2] = src[si + 2];
+            out[di + 3] = src[si + 3];
+          }
+        }
       } else {
-        const stripeIdx = Math.floor(x / stripeWidth);
-        const offset = stripeOffsets[stripeIdx] || 0;
-        srcY = y - offset;
+        for (let x = pos; x < end; x++) {
+          for (let y = 0; y < height; y++) {
+            const si = (y * width + x) * 4;
+            const newY = ((y + offset) % height + height) % height;
+            const di = (newY * width + x) * 4;
+            out[di] = src[si];
+            out[di + 1] = src[si + 1];
+            out[di + 2] = src[si + 2];
+            out[di + 3] = src[si + 3];
+          }
+        }
       }
-
-      const wrappedX = ((srcX % width) + width) % width;
-      const wrappedY = ((srcY % height) + height) % height;
-
-      const si = (wrappedY * width + wrappedX) * 4;
-      const di = (y * width + x) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
     }
+    pos = end;
   }
 }
 
-// ============ ГЕОМЕТРИЯ ============
-function applyGeometricMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number
-): void {
+function applyGeometricMode(src: Uint8ClampedArray, out: Uint8ClampedArray, width: number, height: number, sizePercent: number, strength: number, seed: number): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
   const percent = Math.max(3, Math.min(40, sizePercent)) / 100;
   const baseSize = Math.max(8, Math.round(Math.min(width, height) * percent));
   const maxMove = Math.round(k * baseSize * 1.5);
   const numShapes = Math.max(5, Math.round((width * height) / (baseSize * baseSize) * 0.5));
-
   interface Shape { cx: number; cy: number; size: number; type: number; rotation: number; ox: number; oy: number }
   const shapes: Shape[] = [];
-
   for (let i = 0; i < numShapes; i++) {
     const cx = rand() * width;
     const cy = rand() * height;
@@ -135,7 +174,6 @@ function applyGeometricMode(
     const dist = (0.3 + rand() * 0.7) * maxMove;
     shapes.push({ cx, cy, size, type, rotation, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
-
   const isInside = (px: number, py: number, s: Shape) => {
     const cos = Math.cos(-s.rotation);
     const sin = Math.sin(-s.rotation);
@@ -152,53 +190,34 @@ function applyGeometricMode(
     if (s.type === 3) return rx <= s.size * 0.866 && ry <= s.size * 0.5 && (rx * 0.5 + ry * 0.866) <= s.size * 0.866;
     return false;
   };
-
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      let srcX = x;
-      let srcY = y;
-
       for (const s of shapes) {
         if (isInside(x, y, s)) {
-          srcX = x - s.ox;
-          srcY = y - s.oy;
+          const newX = ((x + s.ox) % width + width) % width;
+          const newY = ((y + s.oy) % height + height) % height;
+          const si = (y * width + x) * 4;
+          const di = (newY * width + newX) * 4;
+          out[di] = src[si];
+          out[di + 1] = src[si + 1];
+          out[di + 2] = src[si + 2];
+          out[di + 3] = src[si + 3];
           break;
         }
       }
-
-      const wrappedX = ((srcX % width) + width) % width;
-      const wrappedY = ((srcY % height) + height) % height;
-
-      const si = (wrappedY * width + wrappedX) * 4;
-      const di = (y * width + x) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
     }
   }
 }
 
-// ============ ПРОИЗВОЛЬНЫЕ (Voronoi) ============
-function applyOrganicMode(
-  src: Uint8ClampedArray,
-  out: Uint8ClampedArray,
-  width: number,
-  height: number,
-  sizePercent: number,
-  strength: number,
-  seed: number
-): void {
+function applyOrganicMode(src: Uint8ClampedArray, out: Uint8ClampedArray, width: number, height: number, sizePercent: number, strength: number, seed: number): void {
   const rand = mulberry32(seed);
   const k = strength / 100;
   const percent = Math.max(5, Math.min(80, sizePercent)) / 100;
   const baseCellSize = Math.max(10, Math.round(Math.min(width, height) * percent));
   const numCells = Math.max(3, Math.round((width * height) / (baseCellSize * baseCellSize) * 0.7));
   const maxMove = Math.round(k * baseCellSize * 1.5);
-
   interface VCell { cx: number; cy: number; ox: number; oy: number }
   const vcells: VCell[] = [];
-
   for (let i = 0; i < numCells; i++) {
     const cx = rand() * width;
     const cy = rand() * height;
@@ -206,7 +225,6 @@ function applyOrganicMode(
     const dist = (0.3 + rand() * 0.7) * maxMove;
     vcells.push({ cx, cy, ox: Math.round(Math.cos(angle) * dist), oy: Math.round(Math.sin(angle) * dist) });
   }
-
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let nearestIdx = 0;
@@ -221,14 +239,10 @@ function applyOrganicMode(
         }
       }
       const cell = vcells[nearestIdx];
-      const srcX = x - cell.ox;
-      const srcY = y - cell.oy;
-
-      const wrappedX = ((srcX % width) + width) % width;
-      const wrappedY = ((srcY % height) + height) % height;
-
-      const si = (wrappedY * width + wrappedX) * 4;
-      const di = (y * width + x) * 4;
+      const newX = ((x + cell.ox) % width + width) % width;
+      const newY = ((y + cell.oy) % height + height) % height;
+      const si = (y * width + x) * 4;
+      const di = (newY * width + newX) * 4;
       out[di] = src[si];
       out[di + 1] = src[si + 1];
       out[di + 2] = src[si + 2];
@@ -237,47 +251,109 @@ function applyOrganicMode(
   }
 }
 
-// ============ ГЛАВНАЯ ФУНКЦИЯ ============
+function applySilhouetteProtection(out: Uint8ClampedArray, src: Uint8ClampedArray, width: number, height: number, silhouetteMask: Uint8Array, silhouetteStrength: number): void {
+  const guard = Math.min(100, silhouetteStrength) / 100;
+  const threshold = 0.3 * guard;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const edgeValue = silhouetteMask[idx] / 255;
+      if (edgeValue > threshold) {
+        const di = idx * 4;
+        out[di] = src[di];
+        out[di + 1] = src[di + 1];
+        out[di + 2] = src[di + 2];
+        out[di + 3] = src[di + 3];
+      }
+    }
+  }
+}
+
 export function applyReassemblyToFrame(
   frame: Frame,
   _blockSize: number,
   config: ReassemblyConfig,
   seed: number,
-  _silhouetteMask?: Uint8Array,
-  _silhouetteStrength = 0
+  silhouetteMask?: Uint8Array,
+  silhouetteStrength = 0
 ): Uint8ClampedArray {
   const { rgba: src, width, height } = frame;
   const out = new Uint8ClampedArray(src.length);
   out.set(src);
-
-  const anyEnabled = config.blocks.enabled || config.stripes.enabled ||
-                     config.geometric.enabled || config.organic.enabled;
-
+  const anyEnabled = config.blocks.enabled || config.stripes.enabled || config.geometric.enabled || config.organic.enabled;
   if (!anyEnabled) return out;
-
+  const mask = generateMask(width, height, config, seed);
+  const threshold = 128;
   if (config.blocks.enabled && config.blocks.strength > 0) {
-    const temp = new Uint8ClampedArray(src.length);
-    applyBlocksMode(out, temp, width, height, config.blocks.size, config.blocks.strength, seed);
-    out.set(temp);
+    const blocksOut = new Uint8ClampedArray(src.length);
+    blocksOut.set(src);
+    applyBlocksMode(src, blocksOut, width, height, config.blocks.size, config.blocks.strength, seed);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (mask[idx] > threshold) {
+          const di = idx * 4;
+          out[di] = blocksOut[di];
+          out[di + 1] = blocksOut[di + 1];
+          out[di + 2] = blocksOut[di + 2];
+          out[di + 3] = blocksOut[di + 3];
+        }
+      }
+    }
   }
-
   if (config.stripes.enabled && config.stripes.strength > 0) {
-    const temp = new Uint8ClampedArray(src.length);
-    applyStripesMode(out, temp, width, height, config.stripes.size, config.stripes.strength, seed + 1);
-    out.set(temp);
+    const stripesOut = new Uint8ClampedArray(src.length);
+    stripesOut.set(src);
+    applyStripesMode(src, stripesOut, width, height, config.stripes.size, config.stripes.strength, seed + 1);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (mask[idx] > threshold) {
+          const di = idx * 4;
+          out[di] = stripesOut[di];
+          out[di + 1] = stripesOut[di + 1];
+          out[di + 2] = stripesOut[di + 2];
+          out[di + 3] = stripesOut[di + 3];
+        }
+      }
+    }
   }
-
   if (config.geometric.enabled && config.geometric.strength > 0) {
-    const temp = new Uint8ClampedArray(src.length);
-    applyGeometricMode(out, temp, width, height, config.geometric.size, config.geometric.strength, seed + 2);
-    out.set(temp);
+    const geoOut = new Uint8ClampedArray(src.length);
+    geoOut.set(src);
+    applyGeometricMode(src, geoOut, width, height, config.geometric.size, config.geometric.strength, seed + 2);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (mask[idx] > threshold) {
+          const di = idx * 4;
+          out[di] = geoOut[di];
+          out[di + 1] = geoOut[di + 1];
+          out[di + 2] = geoOut[di + 2];
+          out[di + 3] = geoOut[di + 3];
+        }
+      }
+    }
   }
-
   if (config.organic.enabled && config.organic.strength > 0) {
-    const temp = new Uint8ClampedArray(src.length);
-    applyOrganicMode(out, temp, width, height, config.organic.size, config.organic.strength, seed + 3);
-    out.set(temp);
+    const organicOut = new Uint8ClampedArray(src.length);
+    organicOut.set(src);
+    applyOrganicMode(src, organicOut, width, height, config.organic.size, config.organic.strength, seed + 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (mask[idx] > threshold) {
+          const di = idx * 4;
+          out[di] = organicOut[di];
+          out[di + 1] = organicOut[di + 1];
+          out[di + 2] = organicOut[di + 2];
+          out[di + 3] = organicOut[di + 3];
+        }
+      }
+    }
   }
-
+  if (silhouetteMask && silhouetteStrength > 0) {
+    applySilhouetteProtection(out, src, width, height, silhouetteMask, silhouetteStrength);
+  }
   return out;
 }

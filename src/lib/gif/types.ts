@@ -71,11 +71,10 @@ export interface ModeConfig {
   size: number;
 }
 
-export interface WaveConfig {
+export interface MaskConfig {
   enabled: boolean;
   strength: number;
   smoothness: number;
-  probability: number;
 }
 
 export interface ReassemblyConfig {
@@ -83,7 +82,8 @@ export interface ReassemblyConfig {
   stripes: ModeConfig;
   geometric: ModeConfig;
   organic: ModeConfig;
-  wave: WaveConfig;
+  mask: MaskConfig;
+  blendSmoothness: number;
 }
 
 export interface VariationConfig {

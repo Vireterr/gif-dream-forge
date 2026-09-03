@@ -813,6 +813,7 @@ function applyBlocksMode(
 
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
+      if (rand() < 0.7 + k * 0.3) {
       const x0 = bx * blockSize;
       const y0 = by * blockSize;
       const x1 = Math.min(width, x0 + blockSize);
@@ -850,11 +851,12 @@ function applyBlocksMode(
           out[di + 1] = pixels[si + 1];
           out[di + 2] = pixels[si + 2];
           out[di + 3] = pixels[si + 3];
-        }
-      }
-    }
-  }
-}
+           }
+         }
+       }
+     }
+   }
+ }
 
 function applyStripesMode(
   src: Uint8ClampedArray,

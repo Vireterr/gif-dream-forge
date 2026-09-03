@@ -812,6 +812,7 @@ function applyBlocksMode(
   const maxMove = Math.max(1, Math.round(k * Math.max(cols, rows) * 0.8));
   for (let by = 0; by < rows; by++) {
     for (let bx = 0; bx < cols; bx++) {
+        if (rand() < 0.7 + k * 0.3) {
         const x0 = bx * blockSize;
         const y0 = by * blockSize;
         const x1 = Math.min(width, x0 + blockSize);
